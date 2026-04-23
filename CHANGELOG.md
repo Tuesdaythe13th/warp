@@ -6,6 +6,8 @@
 
 - Add `wp.tile_scatter_masked()` for per-thread writes into a shared-memory tile, with
   cooperative synchronization ([GH-1298](https://github.com/NVIDIA/warp/issues/1298)).
+- Add `wp.tile_query_valid()` for tile BVH and mesh AABB queries, providing a cleaner loop condition that avoids the
+  `wp.tile_max()` reduction overhead ([GH-1335](https://github.com/NVIDIA/warp/issues/1335)).
 - Add double-precision (`wp.float64`) support to `warp.fem`.
   Precision is selected via the geometry (e.g. `scalar_type=wp.float64` on grid constructors)
   and propagated automatically to function spaces, quadrature, fields, and integration kernels
@@ -45,12 +47,43 @@
 - Add adjoint (backward pass) for out-of-place `tile_cholesky` factorization ([GH-1316](https://github.com/NVIDIA/warp/issues/1316)).
 - Add support for `wp.indexedarray` fields in `@wp.struct` (assignment, device transfer, and NumPy structured values)
   ([GH-1327](https://github.com/NVIDIA/warp/issues/1327)).
+- Add ``wp.tile_axpy(alpha, src, dest)`` for the fused in-place update
+  ``dest += alpha * src`` on tiles. Avoids allocating an intermediate scaled tile
+  ([GH-1363](https://github.com/NVIDIA/warp/issues/1363)).
+- Add ``wp.tile_dot(a, b)`` to compute the dot product of two tiles of matching
+  shape and dtype, returning a single-element tile of the tile's scalar type.
+  For tiles of vectors or matrices, each element pair is fully contracted (e.g.
+  ``wp.dot(a[i], b[i])`` for tiles of ``vec3f``). Replaces the longer
+  ``wp.tile_sum(wp.tile_map(wp.tensordot, a, b))`` pattern
+  ([GH-1364](https://github.com/NVIDIA/warp/issues/1364)).
+- Add pluggable allocator interface for custom GPU memory allocators, including built-in RMM support via ``wp.RmmAllocator`` ([GH-781](https://github.com/NVIDIA/warp/issues/781)).
+- Add `aligned` parameter to `tile_load()` and `tile_store()` to skip runtime
+  alignment checks when the caller guarantees 16-byte alignment
+  ([GH-1236](https://github.com/NVIDIA/warp/issues/1236)).
+- Extend vectorized float4 tile loads/stores to 3D and 4D tiles (previously
+  2D-only), and add coalesced byte-copy path for large element types (>16 bytes)
+  ([GH-1236](https://github.com/NVIDIA/warp/issues/1236)).
+- Add `wp.tile_stack()` cooperative thread-block stack for tile kernels, with `wp.tile_stack_push()`,
+  `wp.tile_stack_pop()`, `wp.tile_stack_clear()`, and `wp.tile_stack_count()` operations
+  ([GH-1287](https://github.com/NVIDIA/warp/issues/1287)).
+- Add `wp.bfloat16` scalar data type with array allocation, kernel execution, autodiff, DLPack, PyTorch, JAX, and
+  optional `ml_dtypes` NumPy interop ([GH-1332](https://github.com/NVIDIA/warp/issues/1332)).
+- Add preliminary graph capture support for serialization (APIC) and CPU replay. Operations recorded during
+  `capture_begin()`/`capture_end()` can be serialized to `.wrp` files via `capture_save()`
+  and loaded for execution from Python or standalone C++ via `capture_load()`. CPU graph
+  capture supports replay through `capture_launch()`. Added `wp.handle` scalar type for mesh handle serialization
+  ([GH-1349](https://github.com/NVIDIA/warp/issues/1349)).
 
 ### Removed
 
 - Remove Python 3.9 support. Python 3.10 or newer is now required.
 - Remove integer type support from `wp.isfinite()`, `wp.isnan()`, and `wp.isinf()`
   ([GH-847](https://github.com/NVIDIA/warp/issues/847)).
+- Remove the private-API forwarding layer deprecated in the 1.11 transition
+  ([GH-1352](https://github.com/NVIDIA/warp/issues/1352)). The 14 shim module
+  paths (`warp.torch`, `warp.context`, etc.), `warp.mat`/`warp.vec`,
+  `warp.context.Devicelike`, and the `Module.foo` → `Module._foo` proxy are gone.
+  Use the curated public API in the `warp` namespace instead.
 
 ### Deprecated
 
@@ -93,6 +126,10 @@
   Pass `output_dtype=wp.float64` explicitly to restore the previous behavior
   ([GH-418](https://github.com/NVIDIA/warp/issues/418)).
 - Reduce Python-side dispatch overhead for half-float conversion using `METH_FASTCALL`
+  ([GH-1339](https://github.com/NVIDIA/warp/issues/1339)).
+- Require `libpython3-dev` when building from source on Linux, for the Python C headers
+  needed by the `METH_FASTCALL` native module. The build now checks for `Python.h` up front
+  and reports an actionable error when the headers are missing
   ([GH-1339](https://github.com/NVIDIA/warp/issues/1339)).
 - Tile parameters in ``@wp.func_native`` are now passed by reference, matching ``@wp.func`` behavior.
   Previously tile parameters were passed by value, preventing native snippets from modifying shared

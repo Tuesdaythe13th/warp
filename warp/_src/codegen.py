@@ -292,6 +292,8 @@ class StructInstance:
                 # scalar
                 if var.type == warp.float16:
                     npvalue.append(half_bits_to_float(value))
+                elif var.type == warp.bfloat16:
+                    npvalue.append(bfloat16_bits_to_float(value))
                 else:
                     npvalue.append(value)
 
@@ -406,9 +408,11 @@ def _make_struct_field_setter(cls, field: str, var_type: type):
             if is_warp_scalar:
                 # assigning warp type value (e.g.: wp.float32)
                 value = value.value
-            # float16 needs conversion to uint16 bits
+            # float16/bfloat16 needs conversion to uint16 bits
             if var_type == warp.float16:
                 setattr(inst._ctype, field, float_to_half_bits(value))
+            elif var_type == warp.bfloat16:
+                setattr(inst._ctype, field, float_to_bfloat16_bits(value))
             else:
                 setattr(inst._ctype, field, value)
 
@@ -471,8 +475,8 @@ class Struct:
             elif _is_texture_type(var.type):
                 fields.append((label, var.type._wp_ctype_))
             else:
-                # HACK: fp16 requires conversion functions from warp.so
-                if var.type is warp.float16:
+                # HACK: fp16/bf16 requires conversion functions from warp.so
+                if var.type is warp.float16 or var.type is warp.bfloat16:
                     warp.init()
                 fields.append((label, var.type._type_))
 
@@ -631,6 +635,8 @@ class Struct:
                 cvalue = ctypes.cast(ptr + offset, ctypes.POINTER(var.type._type_)).contents
                 if var.type == warp.float16:
                     setattr(instance, name, half_bits_to_float(cvalue.value))
+                elif var.type == warp.bfloat16:
+                    setattr(instance, name, bfloat16_bits_to_float(cvalue.value))
                 else:
                     setattr(instance, name, cvalue.value)
 
@@ -755,6 +761,8 @@ class Var:
             classstr = f"wp::{type(t).__name__}"
             return f"{classstr}<{dtypestr}>"
         elif is_tile(t):
+            return t.ctype()
+        elif is_tile_stack(t):
             return t.ctype()
         elif isinstance(t, type) and issubclass(t, StructInstance):
             # ensure the actual Struct name is used instead of "NewStructInstance"
@@ -920,6 +928,7 @@ def get_arg_type(arg: Var | Any) -> type:
             tuple_t,
             slice_t,
             tile,
+            tile_stack,
         ),
     ):
         return arg
@@ -1146,6 +1155,8 @@ class Adjoint:
 
         for var in adj.variables:
             if is_tile(var.type) and var.type.storage == "shared" and var.type.owner:
+                total_shared += var.type.size_in_bytes()
+            elif is_tile_stack(var.type):
                 total_shared += var.type.size_in_bytes()
 
         return total_shared + adj.max_required_extra_shared_memory
@@ -4372,7 +4383,7 @@ extern "C" {{
 
 // Python CPU entry points
 WP_API void {name}_cpu_forward(
-    wp::launch_bounds_t<{launch_ndim}> dim,
+    wp::launch_bounds_t<{launch_ndim}> *dim,
     wp_args_{name} *_wp_args)
 {{
     wp::tile_shared_storage_t tile_mem;
@@ -4380,9 +4391,9 @@ WP_API void {name}_cpu_forward(
     wp::shared_tile_storage = &tile_mem;
 #endif
 
-    for (size_t task_index = 0; task_index < dim.size; ++task_index)
+    for (size_t task_index = 0; task_index < dim->size; ++task_index)
     {{
-        {name}_cpu_kernel_forward(dim, task_index, _wp_args);
+        {name}_cpu_kernel_forward(*dim, task_index, _wp_args);
     }}
 }}
 
@@ -4395,7 +4406,7 @@ cpu_module_template_backward = """
 extern "C" {{
 
 WP_API void {name}_cpu_backward(
-    wp::launch_bounds_t<{launch_ndim}> dim,
+    wp::launch_bounds_t<{launch_ndim}> *dim,
     wp_args_{name} *_wp_args,
     wp_args_{name} *_wp_adj_args)
 {{
@@ -4404,9 +4415,9 @@ WP_API void {name}_cpu_backward(
     wp::shared_tile_storage = &tile_mem;
 #endif
 
-    for (size_t task_index = 0; task_index < dim.size; ++task_index)
+    for (size_t task_index = 0; task_index < dim->size; ++task_index)
     {{
-        {name}_cpu_kernel_backward(dim, task_index, _wp_args, _wp_adj_args);
+        {name}_cpu_kernel_backward(*dim, task_index, _wp_args, _wp_adj_args);
     }}
 }}
 
@@ -4432,9 +4443,10 @@ def constant_str(value):
     elif isinstance(value, ctypes.Array):
         if value_type._wp_scalar_type_ == float16:
             # special case for float16, which is stored as uint16 in the ctypes.Array
-            from warp._src.context import runtime  # noqa: PLC0415
-
-            scalar_value = runtime.core.wp_half_bits_to_float
+            scalar_value = warp._src.context.runtime.core.wp_half_bits_to_float
+        elif value_type._wp_scalar_type_ == bfloat16:
+            # special case for bfloat16, which is stored as uint16 in the ctypes.Array
+            scalar_value = warp._src.context.runtime.core.wp_bfloat16_bits_to_float
         else:
 
             def scalar_value(x):
@@ -4611,6 +4623,8 @@ def codegen_func_forward(adj, func_type="kernel", device="cpu"):
     for var in adj.variables:
         if is_tile(var.type):
             lines += [f"{var.ctype()} {var.emit()} = {var.type.cinit(requires_grad=False)};\n"]
+        elif is_tile_stack(var.type):
+            lines += [f"{var.ctype()} {var.emit()} = {var.type.cinit()};\n"]
         elif var.constant is None:
             lines += [f"{var.ctype()} {var.emit()};\n"]
         else:
@@ -4666,6 +4680,8 @@ def codegen_func_reverse(adj, func_type="kernel", device="cpu"):
     for var in adj.variables:
         if is_tile(var.type):
             lines += [f"{var.ctype()} {var.emit()} = {var.type.cinit(requires_grad=True)};\n"]
+        elif is_tile_stack(var.type):
+            lines += [f"{var.ctype()} {var.emit()} = {var.type.cinit()};\n"]
         elif var.constant is None:
             lines += [f"{var.ctype()} {var.emit()};\n"]
         else:
@@ -4691,6 +4707,9 @@ def codegen_func_reverse(adj, func_type="kernel", device="cpu"):
                 lines += [
                     f"{var.type.ctype()}& {name} = {var.emit()};\n"
                 ]  # reverse mode tiles alias the forward vars since shared tiles store both primal/dual vars together
+        elif is_tile_stack(var.type):
+            # Adjoint pointers are intentionally uninitialized -- all adj_tile_stack_* stubs are empty no-ops.
+            lines += [f"{var.ctype()} {name};\n"]
         else:
             lines += [f"{ctype} {name} = {{}};\n"]
 
@@ -4771,7 +4790,7 @@ def codegen_func(adj, c_func_name: str, device="cpu", options=None, forward_only
 
     # forward args
     for i, arg in enumerate(adj.args):
-        if is_tile(arg.type):
+        if is_tile(arg.type) or is_tile_stack(arg.type):
             tname = f"tile_{arg.label}"
             template_params.append(tname)
             s = f"{tname}& {arg.emit()}"
@@ -4793,7 +4812,7 @@ def codegen_func(adj, c_func_name: str, device="cpu", options=None, forward_only
         if matches_array_class(arg.type, indexedarray):
             _arg = Var(arg.label, array(dtype=arg.type.dtype, ndim=arg.type.ndim))
             reverse_args.append(_arg.ctype() + " & adj_" + arg.label)
-        elif is_tile(arg.type):
+        elif is_tile(arg.type) or is_tile_stack(arg.type):
             tname = f"tile_{arg.label}"
             reverse_args.append(f"{tname} & adj_{arg.label}")
         else:
@@ -4806,7 +4825,7 @@ def codegen_func(adj, c_func_name: str, device="cpu", options=None, forward_only
     # custom output reverse args (user-declared)
     if adj.custom_reverse_mode:
         for arg in adj.args[adj.custom_reverse_num_input_args :]:
-            if is_tile(arg.type):
+            if is_tile(arg.type) or is_tile_stack(arg.type):
                 tname = f"tile_{arg.label}"
                 reverse_args.append(f"{tname} & {arg.emit()}")
             else:

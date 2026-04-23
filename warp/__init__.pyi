@@ -22,7 +22,9 @@ from warp._src.types import int32 as int32
 from warp._src.types import uint32 as uint32
 from warp._src.types import int64 as int64
 from warp._src.types import uint64 as uint64
+from warp._src.types import handle as handle
 from warp._src.types import float16 as float16
+from warp._src.types import bfloat16 as bfloat16
 from warp._src.types import float32 as float32
 from warp._src.types import float64 as float64
 from warp._src.types import vec2 as vec2
@@ -167,11 +169,19 @@ from warp._src.context import set_mempool_access_enabled as set_mempool_access_e
 from warp._src.context import is_peer_access_supported as is_peer_access_supported
 from warp._src.context import is_peer_access_enabled as is_peer_access_enabled
 from warp._src.context import set_peer_access_enabled as set_peer_access_enabled
+from warp._src.context import Allocator as Allocator
+from warp._src.context import get_device_allocator as get_device_allocator
+from warp._src.context import set_cuda_allocator as set_cuda_allocator
+from warp._src.context import set_device_allocator as set_device_allocator
+from warp._src.utils import ScopedAllocator as ScopedAllocator
+from warp._src.rmm_allocator import RmmAllocator as RmmAllocator
 from warp._src.utils import ScopedCapture as ScopedCapture
 from warp._src.context import is_conditional_graph_supported as is_conditional_graph_supported
 from warp._src.context import capture_begin as capture_begin
 from warp._src.context import capture_end as capture_end
 from warp._src.context import capture_launch as capture_launch
+from warp._src.context import capture_save as capture_save
+from warp._src.context import capture_load as capture_load
 from warp._src.context import capture_if as capture_if
 from warp._src.context import capture_while as capture_while
 from warp._src.context import capture_debug_dot_print as capture_debug_dot_print
@@ -229,13 +239,13 @@ from . import utils as utils
 from warp._src.math import *
 from warp._src.marching_cubes import MarchingCubes as MarchingCubes
 from warp._src.context import RegisteredGLBuffer as RegisteredGLBuffer
-from warp._src import types as _types
 Length = TypeVar("Length", bound=int)
 Rows = TypeVar("Rows", bound=int)
 Cols = TypeVar("Cols", bound=int)
 DType = TypeVar("DType")
 NDim = TypeVar("NDim", bound=int, default=int)
 Shape = TypeVar("Shape")
+Capacity = TypeVar("Capacity", bound=int)
 class Vector(Generic[Scalar, Length]): ...
 class Matrix(Generic[Scalar, Rows, Cols]): ...
 class Quaternion(Generic[Float]): ...
@@ -244,6 +254,7 @@ class Array(Generic[DType, NDim]): ...
 class FabricArray(Generic[DType, NDim]): ...
 class IndexedFabricArray(Generic[DType, NDim]): ...
 class Tile(Generic[DType, Shape]): ...
+class TileStack(Generic[DType, Capacity]): ...
 
 """The ``warp`` package provides array types and functions for creating and manipulating
 multi-dimensional data on CPU and CUDA devices. It includes kernel and function decorators
@@ -262,74 +273,11 @@ element methods, and :mod:`warp.sparse` for sparse linear algebra.
 # Skipped: from warp._src.types import spatial_vector as spatial_vector (kernel builtin stubs preferred)
 
 # Skipped: from warp._src.types import tile as tile (kernel builtin stubs preferred)
+# Skipped: from warp._src.types import tile_stack as tile_stack (kernel builtin stubs preferred)
 
 # Skipped: from warp._src.context import zeros as zeros (merged stubs generated below)
 
 __version__ = config.version
-
-def __getattr__(name):
-    from warp._src.utils import get_deprecated_api  # noqa: PLC0415
-
-    if name == "mat":
-        return get_deprecated_api(_types, "warp", "matrix", old_attr_path="warp.mat")
-    elif name == "vec":
-        return get_deprecated_api(_types, "warp", "vector", old_attr_path="warp.vec")
-
-    # Lazy-import deprecated submodule namespaces (e.g., warp.torch -> warp._src.torch).
-    #
-    # A plain `return importlib.import_module(f".{name}", __package__)` isn't safe
-    # here because these deprecated wrapper modules call `warn_deprecated_namespace()`
-    # at module load time. That warning can be triggered by external introspection
-    # tools -- most notably CPython's pickle, whose `whichmodule()` iterates through
-    # every module in `sys.modules` calling `getattr(module, name)` to locate globals.
-    # When pickle probes `getattr(warp, "torch")`, this `__getattr__` fires, the
-    # submodule is imported, and its module-level deprecation warning is emitted.
-    # Depending on the warning configuration this can crash the caller (e.g.,
-    # PyTorch's inductor FX graph cache pickler, whose C implementation only catches
-    # `AttributeError` from `getattr` -- any other exception propagates and aborts
-    # compilation).
-    #
-    # To avoid this, we suppress `warn_deprecated_namespace()` when *we* are the ones
-    # triggering the import (via the `_importing_deprecated_namespace` flag). Explicit
-    # `import warp.torch` by user code bypasses `__getattr__` entirely, so the
-    # module-level warning still fires in that case. Per-symbol deprecation warnings
-    # (handled by each submodule's own `__getattr__` + `get_deprecated_api`) are
-    # unaffected.
-
-    if name in (
-        "build_dll",
-        "build",
-        "builtins",
-        "codegen",
-        "constants",
-        "context",
-        "dlpack",
-        "fabric",
-        "jax",
-        "marching_cubes",
-        "math",
-        "paddle",
-        "tape",
-        "torch",
-        "types",
-        "utils",
-    ):
-        import importlib  # noqa: PLC0415
-        import sys  # noqa: PLC0415
-
-        full_name = f"{__package__}.{name}"
-        if full_name in sys.modules:
-            return sys.modules[full_name]
-
-        from warp._src import utils as _warp_utils  # noqa: PLC0415
-
-        _warp_utils._importing_deprecated_namespace = True
-        try:
-            return importlib.import_module(f".{name}", __package__)
-        finally:
-            _warp_utils._importing_deprecated_namespace = False
-
-    raise AttributeError(f"module 'warp' has no attribute '{name}'")
 
 
 class vec2h:
@@ -2856,6 +2804,7 @@ def tile_load(
     offset: tuple[int, ...],
     storage: str,
     bounds_check: bool,
+    aligned: bool,
 ) -> Tile[Any, tuple[int, ...]]:
     """Load a tile from a global memory array.
 
@@ -2868,6 +2817,14 @@ def tile_load(
         storage: The storage location for the tile: ``"register"`` for registers
             (default) or ``"shared"`` for shared memory.
         bounds_check: Needed for unaligned tiles, but can disable for memory-aligned tiles for faster load times
+        aligned: If True, skip runtime alignment checks for vectorized loads (shared memory,
+            2D+ tiles only). Has no effect for 1D tiles or register storage. Use when you
+            guarantee that: (1) the base address at the tile offset is 16-byte aligned,
+            (2) the array is contiguous (dense row-major strides), (3) all outer-dimension
+            strides are multiples of 16 bytes, and (4) the tile fits entirely within array
+            bounds. Address-alignment violations trap unconditionally (even in release
+            builds). Bounds and contiguity violations trigger debug-only asserts; in
+            release builds they cause silent data corruption.
 
     Returns:
         A tile with shape as specified and data type the same as the source array."""
@@ -2880,6 +2837,7 @@ def tile_load(
     offset: int32,
     storage: str,
     bounds_check: bool,
+    aligned: bool,
 ) -> Tile[Any, tuple[int, ...]]:
     """Load a tile from a global memory array."""
     ...
@@ -2950,7 +2908,13 @@ def tile_load_indexed(
     ...
 
 @over
-def tile_store(a: Array[Any], t: Tile[Any, tuple[int, ...]], offset: tuple[int, ...], bounds_check: bool) -> None:
+def tile_store(
+    a: Array[Any],
+    t: Tile[Any, tuple[int, ...]],
+    offset: tuple[int, ...],
+    bounds_check: bool,
+    aligned: bool,
+) -> None:
     """Store a tile to a global memory array.
 
     This method will cooperatively store a tile to global memory using all threads in the block.
@@ -2959,11 +2923,19 @@ def tile_store(a: Array[Any], t: Tile[Any, tuple[int, ...]], offset: tuple[int, 
         a: The destination array in global memory
         t: The source tile to store data from, must have the same data type and number of dimensions as the destination array
         offset: Offset in the destination array (optional)
-        bounds_check: Needed for unaligned tiles, but can disable for memory-aligned tiles for faster write times."""
+        bounds_check: Needed for unaligned tiles, but can disable for memory-aligned tiles for faster write times.
+        aligned: If True, skip runtime alignment checks for vectorized stores (shared memory,
+            2D+ tiles only). Has no effect for 1D tiles or register storage. Use when you
+            guarantee that: (1) the base address at the tile offset is 16-byte aligned,
+            (2) the array is contiguous (dense row-major strides), (3) all outer-dimension
+            strides are multiples of 16 bytes, and (4) the tile fits entirely within array
+            bounds. Address-alignment violations trap unconditionally (even in release
+            builds). Bounds and contiguity violations trigger debug-only asserts; in
+            release builds they cause silent data corruption."""
     ...
 
 @over
-def tile_store(a: Array[Any], t: Tile[Any, tuple[int, ...]], offset: int32, bounds_check: bool) -> None:
+def tile_store(a: Array[Any], t: Tile[Any, tuple[int, ...]], offset: int32, bounds_check: bool, aligned: bool) -> None:
     """Store a tile to a global memory array."""
     ...
 
@@ -3621,6 +3593,76 @@ def tile_sum(a: Tile[Any, tuple[int, ...]]) -> Tile[Any, tuple[Literal[1]]]:
             [256] = tile(shape=(1), storage=register)"""
     ...
 
+def tile_dot(a: Tile[Any, tuple[int, ...]], b: Tile[Any, tuple[int, ...]]) -> Tile[Any, tuple[Literal[1]]]:
+    """Compute the dot product of two tiles.
+
+    Computes a full contraction (tensordot) between corresponding elements
+    and sums the results. For scalar tiles this is the standard dot product;
+    for vector or matrix tiles each element pair is fully contracted
+    (e.g., ``wp.dot(a[i], b[i])`` for ``vec3`` elements).
+
+    Equivalent to ``wp.tile_sum(wp.tile_map(wp.tensordot, a, b))``
+    but without any intermediate tiles or shared-memory round trips.
+
+    Args:
+        a: First tile operand.
+        b: Second tile operand (must have same shape and dtype as ``a``).
+
+    Returns:
+        A single-element tile holding the dot-product result. Index the
+        tile at ``[0]`` to obtain the scalar value.
+
+    Example:
+
+        .. code-block:: python
+
+            @wp.kernel
+            def compute():
+
+                a = wp.tile_ones(dtype=float, shape=64)
+                b = wp.tile_ones(dtype=float, shape=64) * 2.0
+                d = wp.tile_dot(a, b)
+
+                print(d)
+
+            wp.launch_tiled(compute, dim=[1], inputs=[], block_dim=64)
+
+        .. code-block:: text
+
+            [128] = tile(shape=(1), storage=register)"""
+    ...
+
+def tile_axpy(alpha: Any, src: Tile[Any, tuple[int, ...]], dest: Tile[Any, tuple[int, ...]]) -> None:
+    """Scale ``src`` by ``alpha`` and accumulate into ``dest``.
+
+    Performs a fused multiply-add directly into the destination tile without
+    creating an intermediate scaled tile.
+
+    Args:
+        alpha: Scalar multiplier (must match the tile's underlying scalar type).
+        src: Source tile (must have same shape and dtype as ``dest``).
+        dest: Destination tile, modified in place.
+
+    Example:
+
+        .. code-block:: python
+
+            @wp.kernel
+            def compute():
+
+                dest = wp.tile_ones(dtype=float, shape=4) * 2.0
+                src = wp.tile_ones(dtype=float, shape=4) * 3.0
+                wp.tile_axpy(5.0, src, dest)
+
+                print(dest)
+
+            wp.launch_tiled(compute, dim=[1], inputs=[], block_dim=64)
+
+        .. code-block:: text
+
+            [17 17 17 17] = tile(shape=(4), storage=register)"""
+    ...
+
 def tile_sort(keys: Tile[Any, tuple[int]], values: Tile[Any, tuple[int]]) -> None:
     """Cooperatively sort the elements of two tiles in ascending order based on the keys, using all threads in the block.
 
@@ -4203,6 +4245,265 @@ def tile_bvh_query_next(query: BvhQueryTiled) -> Tile[int32, tuple[int]]:
     Returns:
         A register tile of shape ``(block_dim,)`` with dtype int, where each element contains
             the result index for that thread (-1 if no result)"""
+    ...
+
+@over
+def tile_query_valid(query: BvhQueryTiled) -> bool:
+    """Return whether there are remaining results in a thread-block parallel BVH query.
+
+    This function returns ``True`` when the query has more results to process, and ``False``
+    when the query is fully exhausted. The value is uniform across all threads in the block.
+
+    This can be used as a loop condition instead of :func:`tile_max`:
+
+    .. code-block:: python
+
+        query = wp.tile_bvh_query_aabb(bvh_id, lower, upper)
+        while wp.tile_query_valid(query):
+            result_tile = wp.tile_bvh_query_next(query)
+            result_idx = wp.untile(result_tile)
+            if result_idx >= 0:
+                ...
+
+    Args:
+        query: The thread-block BVH query object
+
+    Returns:
+        ``True`` if more results are available, ``False`` if exhausted"""
+    ...
+
+@over
+def tile_query_valid(query: MeshQueryAABBTiled) -> bool:
+    """Return whether there are remaining results in a thread-block parallel mesh AABB query.
+
+    This function returns ``True`` when the query has more results to process, and ``False``
+    when the query is fully exhausted. The value is uniform across all threads in the block.
+
+    This can be used as a loop condition instead of :func:`tile_max`:
+
+    .. code-block:: python
+
+        query = wp.tile_mesh_query_aabb(mesh_id, lower, upper)
+        while wp.tile_query_valid(query):
+            result_tile = wp.tile_mesh_query_aabb_next(query)
+            result_idx = wp.untile(result_tile)
+            if result_idx >= 0:
+                ...
+
+    Args:
+        query: The thread-block mesh query object
+
+    Returns:
+        ``True`` if more results are available, ``False`` if exhausted"""
+    ...
+
+def tile_stack(capacity: int32, dtype: Any) -> TileStack[Any, Any]:
+    """Allocate a cooperative thread-block stack in shared memory.
+
+    Args:
+        capacity: Maximum number of elements (must be a compile-time constant)
+        dtype: Data type of stack elements
+
+    Returns:
+        A tile stack object for use with :func:`tile_stack_push`, :func:`tile_stack_pop`,
+        :func:`tile_stack_clear`, and :func:`tile_stack_count`.
+
+    Example:
+
+        .. code-block:: python
+
+            BLOCK = 8
+            CAP = wp.constant(8)
+
+            @wp.kernel
+            def compact_kernel(data: wp.array(dtype=int), out: wp.array(dtype=int), out_count: wp.array(dtype=int)):
+                _i, j = wp.tid()
+                s = wp.tile_stack(capacity=CAP, dtype=int)
+
+                val = data[j]
+                wp.tile_stack_push(s, val, val > 5)
+
+                if j == 0:
+                    out_count[0] = wp.tile_stack_count(s)
+
+                result, slot = wp.tile_stack_pop(s)
+                if slot != -1:
+                    out[slot] = result
+
+            data = wp.array([1, 8, 3, 7, 2, 9, 4, 6], dtype=int)
+            out = wp.zeros(BLOCK, dtype=int)
+            out_count = wp.zeros(1, dtype=int)
+            wp.launch_tiled(compact_kernel, dim=[1], inputs=[data, out, out_count], block_dim=BLOCK)
+
+            n = out_count.numpy()[0]
+            print(sorted(out.numpy()[:n].tolist()))
+
+        .. code-block:: text
+
+            [6, 7, 8, 9]"""
+    ...
+
+def tile_stack_push(s: Any, value: Any, has_value: bool) -> int:
+    """Push a value onto a tile stack (cooperative).
+
+    All threads in the block must call this function. Only threads with
+    ``has_value=True`` write to the stack.
+
+    Args:
+        s: The tile stack
+        value: The value to push
+        has_value: Whether this thread has a value to push
+
+    Returns:
+        The slot index where the value was written, or ``-1`` if
+        ``has_value`` is ``False`` or the stack overflowed.
+
+    Example:
+
+        .. code-block:: python
+
+            CAP = wp.constant(8)
+
+            @wp.kernel
+            def push_kernel(out_idx: wp.array(dtype=int)):
+                _i, j = wp.tid()
+                s = wp.tile_stack(capacity=CAP, dtype=int)
+                idx = wp.tile_stack_push(s, j * 10, j < 4)
+                out_idx[j] = idx
+
+            out_idx = wp.full(8, -1, dtype=int)
+            wp.launch_tiled(push_kernel, dim=[1], inputs=[out_idx], block_dim=8)
+
+            idxs = out_idx.numpy()
+            print(sorted(idxs[idxs >= 0].tolist()))
+            print(sum(idxs == -1))
+
+        .. code-block:: text
+
+            [0, 1, 2, 3]
+            4"""
+    ...
+
+def tile_stack_pop(s: Any) -> tuple[Any, int]:
+    """Pop a value from a tile stack (cooperative).
+
+    All threads in the block must call this function. Each calling thread
+    races for a slot.
+
+    Args:
+        s: The tile stack
+
+    Returns:
+        A tuple ``(value, slot)`` where ``value`` is the popped element
+        (or the default value if the stack was empty) and ``slot`` is the
+        index of the popped element (the slot it previously occupied), or
+        ``-1`` if the stack was empty. When non-negative, ``slot`` lies in
+        ``[0, capacity-1]``. Consistent with :func:`tile_stack_push`
+        which also uses ``-1`` to indicate failure.
+
+    Example:
+
+        .. code-block:: python
+
+            CAP = wp.constant(8)
+
+            @wp.kernel
+            def pop_kernel(out: wp.array(dtype=int)):
+                _i, j = wp.tid()
+                s = wp.tile_stack(capacity=CAP, dtype=int)
+                wp.tile_stack_push(s, j * 10, j < 4)
+
+                val, slot = wp.tile_stack_pop(s)
+                if slot != -1:
+                    out[slot] = val
+
+            out = wp.full(8, -1, dtype=int)
+            wp.launch_tiled(pop_kernel, dim=[1], inputs=[out], block_dim=8)
+
+            vals = out.numpy()
+            print(sorted(vals[vals >= 0].tolist()))
+
+        .. code-block:: text
+
+            [0, 10, 20, 30]"""
+    ...
+
+def tile_stack_clear(s: Any) -> None:
+    """Clear a tile stack, resetting the count to zero (cooperative).
+
+    All threads in the block must call this function.
+
+    Args:
+        s: The tile stack
+
+    Example:
+
+        .. code-block:: python
+
+            CAP = wp.constant(8)
+
+            @wp.kernel
+            def clear_kernel(before: wp.array(dtype=int), after: wp.array(dtype=int)):
+                _i, j = wp.tid()
+                s = wp.tile_stack(capacity=CAP, dtype=int)
+                wp.tile_stack_push(s, j, True)
+                if j == 0:
+                    before[0] = wp.tile_stack_count(s)
+                wp.tile_stack_clear(s)
+                if j == 0:
+                    after[0] = wp.tile_stack_count(s)
+
+            before = wp.zeros(1, dtype=int)
+            after = wp.zeros(1, dtype=int)
+            wp.launch_tiled(clear_kernel, dim=[1], inputs=[before, after], block_dim=8)
+
+            print(f"before: {before.numpy()[0]}, after: {after.numpy()[0]}")
+
+        .. code-block:: text
+
+            before: 8, after: 0"""
+    ...
+
+def tile_stack_count(s: Any) -> int:
+    """Return the current number of elements in a tile stack.
+
+    Unlike the other tile stack operations this function is **not** cooperative
+    — it does not contain a synchronization barrier and may be called by a
+    single thread or from within a divergent branch. It is safe to call after
+    any :func:`tile_stack_push`, :func:`tile_stack_pop`, or
+    :func:`tile_stack_clear` *provided the preceding cooperative call has
+    completed on all threads in the block*. Those calls end with a barrier
+    that makes ``count`` stable and visible. Calling this after a divergent
+    push/pop/clear is undefined.
+
+    Args:
+        s: The tile stack
+
+    Returns:
+        The current number of elements in the stack.
+
+    Example:
+
+        .. code-block:: python
+
+            CAP = wp.constant(8)
+
+            @wp.kernel
+            def count_kernel(out_count: wp.array(dtype=int)):
+                _i, j = wp.tid()
+                s = wp.tile_stack(capacity=CAP, dtype=int)
+                wp.tile_stack_push(s, j, j % 2 == 0)
+                if j == 0:
+                    out_count[0] = wp.tile_stack_count(s)
+
+            out_count = wp.zeros(1, dtype=int)
+            wp.launch_tiled(count_kernel, dim=[1], inputs=[out_count], block_dim=8)
+
+            print(out_count.numpy()[0])
+
+        .. code-block:: text
+
+            4"""
     ...
 
 def bvh_get_group_root(id: uint64, group: int32) -> int:
@@ -6016,7 +6317,7 @@ def tile_matmul(
     Compute ``out = alpha * a*b``.
 
     Supported datatypes are:
-        * fp16, fp32, fp64 (real)
+        * fp16, bf16, fp32, fp64 (real)
         * vec2h, vec2f, vec2d (complex)
 
     Both input tiles must have the same datatype. Tile data will automatically be migrated
@@ -6046,7 +6347,7 @@ def tile_matmul(
     Compute ``out = alpha * a*b + beta * out``.
 
     Supported datatypes are:
-        * fp16, fp32, fp64 (real)
+        * fp16, bf16, fp32, fp64 (real)
         * vec2h, vec2f, vec2d (complex)
 
     All input and output tiles must have the same datatype. Tile data will automatically be migrated

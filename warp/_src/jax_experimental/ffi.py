@@ -25,6 +25,7 @@ from warp._src.types import (
     type_size_in_bytes,
     type_to_warp,
 )
+from warp._src.utils import warn
 
 from .xla_ffi import *
 
@@ -439,6 +440,7 @@ class FfiKernel:
                     hooks.forward_smem_bytes,
                     kernel_params,
                     stream,
+                    None,  # apic_info
                 )
 
         except Exception as e:
@@ -1300,7 +1302,7 @@ def jax_kernel(
                 try:
                     gi.zero_()
                 except Exception as e:
-                    wp.utils.warn(f"Failed to zero gradient array: {e}", stacklevel=2)
+                    warn(f"Failed to zero gradient array: {e}", stacklevel=2)
                     raise e
 
         # NOTE: We cannot use a passed launch_dims here, the backward rule doesn't receive it (and it could be wrong under pmap/vmap).

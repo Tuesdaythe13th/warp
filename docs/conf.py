@@ -83,7 +83,7 @@ nitpick_ignore_regex = [
     # Internal meta-types used in builtin function signatures (not exported)
     (
         r"py:class",
-        r"(Vector|Quaternion|Matrix|Array|Transformation|Tile|IndexedArray|IndexedFabricArray|FabricArray|Shape|DType|Any)",
+        r"(Vector|Quaternion|Matrix|Array|Transformation|Tile|TileStack|IndexedArray|IndexedFabricArray|FabricArray|Shape|DType|Any)",
     ),
     # Array type parameters from warp.array() annotations (e.g., "dtype=warp.float32", "ndim=3")
     # Sphinx splits "warp.array(dtype=float, ndim=3)" and tries to resolve each part as a class.
@@ -132,7 +132,7 @@ nitpick_ignore_regex = [
 
 # -- Options for source files ------------------------------------------------
 
-exclude_patterns = [".DS_Store", "Thumbs.db", "_build", "_src"]
+exclude_patterns = [".DS_Store", "Thumbs.db", "_build", "_src", "superpowers"]
 source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
@@ -164,7 +164,7 @@ html_theme_options = {
             "type": "fontawesome",
         },
     ],
-    "navigation_depth": 1,
+    "navigation_depth": 2,
 }
 html_title = f"Warp {version}"
 html_context = {
