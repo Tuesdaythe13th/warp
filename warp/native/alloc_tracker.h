@@ -1,19 +1,5 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 #pragma once
 
@@ -54,11 +40,9 @@ public:
     // Associate a tag with an existing live allocation identified by pointer.
     void set_tag(void* ptr, const char* tag);
 
-    // Returns a pointer to an internal buffer.  The caller must copy the
-    // string before the next call to report() from any thread.
     // sort_order: 0 = by size descending (default), 1 = chronological (oldest first)
     // max_items: maximum number of individual allocations shown per category
-    const char* report(int sort_order = 0, int max_items = 10);
+    std::string report(int sort_order = 0, int max_items = 10);
 
     size_t get_current_bytes();
     size_t get_peak_bytes();
@@ -112,9 +96,6 @@ private:
 
     // Scope breakdown: (scope, kind, ordinal) -> (count, bytes)
     std::unordered_map<ScopeKey, std::pair<size_t, size_t>, ScopeKeyHash> m_scope_stats;
-
-    // Buffer for report() return value
-    std::string m_report_buf;
 };
 
 extern AllocTracker g_alloc_tracker;

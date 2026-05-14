@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections import defaultdict, namedtuple
 
 import warp as wp
+from warp._src.logger import log_warning
 
 _wp_module_name_ = "warp.tape"
 
@@ -114,12 +115,12 @@ class Tape:
                 enable_backward = launch[0].options.get("enable_backward")
                 if enable_backward is False:
                     msg = f"Running the tape backwards may produce incorrect gradients because recorded kernel {launch[0].key} is configured with the option 'enable_backward=False'."
-                    wp._src.utils.warn(msg)
+                    log_warning(msg)
                 elif enable_backward is None:
                     enable_backward = launch[0].module.options.get("enable_backward")
                     if enable_backward is False:
                         msg = f"Running the tape backwards may produce incorrect gradients because recorded kernel {launch[0].key} is defined in a module with the option 'enable_backward=False' set."
-                        wp._src.utils.warn(msg)
+                        log_warning(msg)
 
                 kernel = launch[0]
                 dim = launch[1]
@@ -128,7 +129,6 @@ class Tape:
                 outputs = launch[4]
                 device = launch[5]
                 block_dim = launch[6]
-                tiled = launch[8]
 
                 adj_inputs = []
                 adj_outputs = []
@@ -153,14 +153,13 @@ class Tape:
                         adjoint=True,
                         max_blocks=max_blocks,
                         block_dim=block_dim,
-                        tiled=tiled,
                     )
 
     # record a kernel launch on the tape
-    def record_launch(self, kernel, dim, max_blocks, inputs, outputs, device, block_dim=0, metadata=None, tiled=False):
+    def record_launch(self, kernel, dim, max_blocks, inputs, outputs, device, block_dim=0, metadata=None):
         if metadata is None:
             metadata = {}
-        self.launches.append([kernel, dim, max_blocks, inputs, outputs, device, block_dim, metadata, tiled])
+        self.launches.append([kernel, dim, max_blocks, inputs, outputs, device, block_dim, metadata])
 
     def record_func(self, backward, arrays):
         """

@@ -86,6 +86,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     Intended to be modified to create additional test suites
     """
     from warp.tests.cuda.test_async import TestAsync
+    from warp.tests.cuda.test_capture_mode import TestCaptureMode
     from warp.tests.cuda.test_clang_cuda import TestClangCUDA
     from warp.tests.cuda.test_cuda_arch_suffix import TestCudaArchSuffix
     from warp.tests.cuda.test_mempool import TestMempool
@@ -124,12 +125,16 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.matrix.test_mat_lite import TestMatLite
     from warp.tests.test_adam import TestAdam
     from warp.tests.test_allocation_tracker import TestAllocTracker
+    from warp.tests.test_allocator import TestAllocatorProtocol, TestCustomAllocator, TestRmmAllocator
+    from warp.tests.test_apic import TestApic
+    from warp.tests.test_apic_mesh import TestApicMesh
     from warp.tests.test_arithmetic import TestArithmetic
     from warp.tests.test_array import TestArray
     from warp.tests.test_array_reduce import TestArrayReduce
     from warp.tests.test_atomic import TestAtomic
     from warp.tests.test_atomic_bitwise import TestAtomicBitwise
     from warp.tests.test_atomic_cas import TestAtomicCAS
+    from warp.tests.test_bf16 import TestBf16, TestBf16MlDtypes
     from warp.tests.test_block_dim_dispatch import TestBlockDimDispatch
     from warp.tests.test_bool import TestBool
     from warp.tests.test_builtins_resolution import TestBuiltinsResolution
@@ -138,6 +143,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.test_codegen_instancing import TestCodeGenInstancing
     from warp.tests.test_compilation import TestCompilation
     from warp.tests.test_compile_consts import TestConstants
+    from warp.tests.test_composite_component_adjoint import TestCompositeComponentAdjoint
     from warp.tests.test_conditional import TestConditional
     from warp.tests.test_constant_precision import TestConstantPrecision
     from warp.tests.test_context import TestContext
@@ -153,6 +159,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestOptimExamples,
     )
     from warp.tests.test_fabricarray import TestFabricArray
+    from warp.tests.test_factory_style_array_annotations import TestFactoryStyleArrayAnnotations
     from warp.tests.test_fast_math import TestFastMath
     from warp.tests.test_fastcall import TestFastcall, TestFastcallAvailable
     from warp.tests.test_fp16 import TestFp16
@@ -162,6 +169,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.test_grad import TestGrad
     from warp.tests.test_grad_customs import TestGradCustoms
     from warp.tests.test_grad_debug import TestGradDebug
+    from warp.tests.test_graph import TestGraph
     from warp.tests.test_import import TestImport
     from warp.tests.test_indexedarray import TestIndexedArray
     from warp.tests.test_intersect import TestIntersect
@@ -171,6 +179,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.test_launch import TestLaunch
     from warp.tests.test_lerp import TestLerp
     from warp.tests.test_linear_solvers import TestLinearSolvers
+    from warp.tests.test_logger import TestLogger
     from warp.tests.test_lvalue import TestLValue
     from warp.tests.test_math import TestMath
     from warp.tests.test_module_contamination import TestModuleContamination
@@ -198,7 +207,6 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.test_struct import TestStruct
     from warp.tests.test_subscript_types import TestSubscriptTypes
     from warp.tests.test_tape import TestTape
-    from warp.tests.test_template_launch_bounds import TestTemplateLaunchBounds
     from warp.tests.test_transient_module import TestTransientModule
     from warp.tests.test_triangle_closest_point import TestTriangleClosestPoint
     from warp.tests.test_types import TestTypes
@@ -213,20 +221,28 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.tile.test_tile import TestTile
     from warp.tests.tile.test_tile_atomic_bitwise import TestTileAtomicBitwise
     from warp.tests.tile.test_tile_cholesky import TestTileCholesky
+    from warp.tests.tile.test_tile_cholesky_no_mathdx import TestTileCholeskyNoMathdx
     from warp.tests.tile.test_tile_fft import TestTileFFT
     from warp.tests.tile.test_tile_func_arg import TestTileFuncArg
+    from warp.tests.tile.test_tile_fused_ops import TestTileFusedOps
     from warp.tests.tile.test_tile_load import TestTileLoad
     from warp.tests.tile.test_tile_mathdx import TestTileMathDx
     from warp.tests.tile.test_tile_matmul import TestTileMatmul
     from warp.tests.tile.test_tile_matmul_no_mathdx import TestTileMatmulNoMathdx
     from warp.tests.tile.test_tile_reduce import TestTileReduce
     from warp.tests.tile.test_tile_shared_memory import TestTileSharedMemory
+    from warp.tests.tile.test_tile_solve import TestTileSolve
+    from warp.tests.tile.test_tile_solve_no_mathdx import TestTileSolveNoMathdx
     from warp.tests.tile.test_tile_sort import TestTileSort
+    from warp.tests.tile.test_tile_stack import TestTileStack
     from warp.tests.tile.test_tile_view import TestTileView
 
     test_classes = [
         TestAdam,
         TestAllocTracker,
+        TestAllocatorProtocol,
+        TestApic,
+        TestApicMesh,
         TestArithmetic,
         TestArray,
         TestArrayReduce,
@@ -234,15 +250,19 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestAtomic,
         TestAtomicBitwise,
         TestAtomicCAS,
+        TestBf16,
+        TestBf16MlDtypes,
         TestBlockDimDispatch,
         TestBool,
         TestBuiltinsResolution,
         TestBvh,
+        TestCaptureMode,
         TestClangCUDA,
         TestClosestPointEdgeEdgeMethods,
         TestCodeGen,
         TestCodeGenInstancing,
         TestCompilation,
+        TestCompositeComponentAdjoint,
         TestConstants,
         TestConditional,
         TestConstantPrecision,
@@ -251,6 +271,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestCpuPrecompiledHeaders,
         TestCTypes,
         TestCudaArchSuffix,
+        TestCustomAllocator,
         TestDense,
         TestDevices,
         TestDiagnostics,
@@ -258,6 +279,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestEnum,
         TestCoreExamples,
         TestOptimExamples,
+        TestFactoryStyleArrayAnnotations,
         TestFabricArray,
         TestFastMath,
         TestFastcall,
@@ -278,6 +300,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestGrad,
         TestGradCustoms,
         TestGradDebug,
+        TestGraph,
         TestHashGrid,
         TestImport,
         TestIndexedArray,
@@ -289,6 +312,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestLaunch,
         TestLerp,
         TestLinearSolvers,
+        TestLogger,
         TestLValue,
         TestMarchingCubes,
         TestMat,
@@ -320,6 +344,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestQuat,
         TestRand,
         TestReload,
+        TestRmmAllocator,
         TestRounding,
         TestRunlengthEncode,
         TestScalarOps,
@@ -334,20 +359,24 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestStruct,
         TestSubscriptTypes,
         TestTape,
-        TestTemplateLaunchBounds,
         TestTexture,
         TestTile,
         TestTileAtomicBitwise,
         TestTileCholesky,
+        TestTileCholeskyNoMathdx,
         TestTileFFT,
         TestTileFuncArg,
+        TestTileFusedOps,
         TestTileLoad,
         TestTileMathDx,
         TestTileMatmul,
         TestTileMatmulNoMathdx,
         TestTileReduce,
         TestTileSharedMemory,
+        TestTileSolve,
+        TestTileSolveNoMathdx,
         TestTileSort,
+        TestTileStack,
         TestTileView,
         TestTorch,
         TestTransientModule,
@@ -401,6 +430,7 @@ def debug_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader):
     from warp.tests.test_codegen import TestCodeGen
     from warp.tests.test_codegen_instancing import TestCodeGenInstancing
     from warp.tests.test_compile_consts import TestConstants
+    from warp.tests.test_composite_component_adjoint import TestCompositeComponentAdjoint
     from warp.tests.test_conditional import TestConditional
     from warp.tests.test_constant_precision import TestConstantPrecision
     from warp.tests.test_enum import TestEnum
@@ -435,6 +465,7 @@ def debug_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader):
         TestBuiltinsResolution,
         TestCodeGen,
         TestCodeGenInstancing,
+        TestCompositeComponentAdjoint,
         TestConditional,
         TestConstants,
         TestConstantPrecision,

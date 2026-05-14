@@ -391,6 +391,7 @@ struct bvh_query_t {
         , input_upper()
         , bounds_nr(0)
         , primitive_counter(-1)
+        , last_query_valid(true)
     {
     }
 
@@ -417,6 +418,10 @@ struct bvh_query_t {
 
     int bounds_nr;
     bool is_ray;
+    // Tracks whether the most recent bvh_query_next() / tile_bvh_query_next() call
+    // produced a valid index. Seeded to true on construction so an initial
+    // tile_query_valid() check (before any next() call) reports valid.
+    bool last_query_valid;
 };
 
 CUDA_CALLABLE inline bool
@@ -617,7 +622,8 @@ void cubql_bvh_create_device(
     void* context, vec3* lowers, vec3* uppers, int num_items, int leaf_size, CuBQLBVH& bvh_device_on_host
 );
 void cubql_bvh_destroy_device(CuBQLBVH& bvh);
-void cubql_bvh_refit_device(CuBQLBVH& bvh);
+// Returns true on success and false when refit fails; callers should propagate failures.
+bool cubql_bvh_refit_device(CuBQLBVH& bvh);
 void cubql_bvh_rebuild_device(CuBQLBVH& bvh);
 
 #endif  // WP_ENABLE_CUDA

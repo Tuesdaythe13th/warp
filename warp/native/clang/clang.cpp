@@ -114,6 +114,12 @@ static const HostCpuInfo& get_host_cpu_info()
         llvm::sys::getHostCPUFeatures(feature_map);
 
         for (const auto& f : feature_map) {
+            // Skip avx10.1-256: getHostCPUFeatures() reports it on Intel Granite Rapids,
+            // but Clang treats it as an invalid feature combination and warns that it
+            // will be promoted to avx10.1-512 (one warning per compile).
+            if (f.first() == "avx10.1-256") {
+                continue;
+            }
             std::string flag = (f.second ? "+" : "-") + f.first().str();
             result.feature_list.push_back(flag);
             if (!result.features.empty())
@@ -144,8 +150,6 @@ static std::unique_ptr<clang::CompilerInstance> create_compiler(
 
     args.push_back("-I");
     args.push_back(include_dir);
-
-    args.push_back("-std=c++17");
 
     if (debug) {
         args.push_back("-O0");
@@ -878,6 +882,28 @@ WP_API const char* wp_llvm_version()
     static char version[64];
     snprintf(version, sizeof(version), "%d.%d.%d", LLVM_VERSION_MAJOR, LLVM_VERSION_MINOR, LLVM_VERSION_PATCH);
     return version;
+}
+
+WP_API const char* wp_get_host_cpu_name() { return get_host_cpu_info().name.c_str(); }
+
+WP_API const char* wp_get_host_cpu_features()
+{
+    // Build a comma-separated string of only the *enabled* features.
+    // cpu.feature_list includes both +enabled and -disabled flags;
+    // we filter to only the enabled ones and strip the leading '+'.
+    static std::string enabled_features = []() {
+        const auto& cpu = get_host_cpu_info();
+        std::string result;
+        for (const auto& flag : cpu.feature_list) {
+            if (!flag.empty() && flag[0] == '+') {
+                if (!result.empty())
+                    result += ",";
+                result += flag.substr(1);  // strip leading '+'
+            }
+        }
+        return result;
+    }();
+    return enabled_features.c_str();
 }
 
 }  // extern "C"

@@ -1,25 +1,12 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 #include "alloc_tracker.h"
 #include "crt.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <sstream>
 
@@ -183,7 +170,7 @@ static std::string format_bytes(size_t bytes)
     return buf;
 }
 
-const char* AllocTracker::report(int sort_order, int max_items)
+std::string AllocTracker::report(int sort_order, int max_items)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -296,7 +283,10 @@ const char* AllocTracker::report(int sort_order, int max_items)
             });
         else
             std::sort(recs.begin(), recs.end(), [](const AllocRecord* a, const AllocRecord* b) {
-                return a->size > b->size;
+                // Break size ties with seq so equal-size allocations appear in allocation order.
+                if (a->size != b->size)
+                    return a->size > b->size;
+                return a->seq < b->seq;
             });
     };
 
@@ -351,8 +341,7 @@ const char* AllocTracker::report(int sort_order, int max_items)
         print_records("Live pinned allocations", pinned_recs);
     }
 
-    m_report_buf = os.str();
-    return m_report_buf.c_str();
+    return os.str();
 }
 
 std::string AllocTracker::build_scope_path()
@@ -415,9 +404,18 @@ WP_API void wp_alloc_tracker_push_scope(const char* name) { g_alloc_tracker.push
 
 WP_API void wp_alloc_tracker_pop_scope() { g_alloc_tracker.pop_scope(); }
 
-WP_API const char* wp_alloc_tracker_report(int sort_order, int max_items)
+WP_API size_t wp_alloc_tracker_report(char* buf, size_t cap, int sort_order, int max_items)
 {
-    return g_alloc_tracker.report(sort_order, max_items);
+    std::string report = g_alloc_tracker.report(sort_order, max_items);
+    size_t needed = report.size();
+
+    if (buf && cap > 0) {
+        size_t copied = std::min(needed, cap - 1);
+        std::memcpy(buf, report.data(), copied);
+        buf[copied] = '\0';
+    }
+
+    return needed;
 }
 
 WP_API size_t wp_alloc_tracker_get_current_bytes() { return g_alloc_tracker.get_current_bytes(); }

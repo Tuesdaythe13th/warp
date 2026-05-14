@@ -518,6 +518,14 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
 
     native_dir = os.path.join(warp_home, "native")
 
+    # Validate Python development headers for fastcall.cpp
+    python_include_dir = sysconfig.get_path("include")
+    if not python_include_dir or not os.path.isfile(os.path.join(python_include_dir, "Python.h")):
+        raise RuntimeError(
+            f"Python development headers not found (looked in {python_include_dir}).\n"
+            f"Install the Python development package, e.g.: `sudo apt install libpython{sys.version_info.major}.{sys.version_info.minor}-dev`"
+        )
+
     if cu_paths:
         # check CUDA Toolkit version
         ctk_version = get_cuda_toolkit_version(cuda_home)
@@ -545,6 +553,7 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
             "-std=c++17",
             "-xcuda",
             f'--cuda-path="{cuda_home}"',
+            "-D_GLIBCXX_USE_CXX11_ABI=0",
         ]
 
         # CUDA 13+ moved CUB into CCCL directory structure
@@ -615,6 +624,16 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
         if args.fast_math:
             cpp_flags += ' /fp:fast /D "WP_FAST_MATH"'
 
+        if args.sanitize:
+            cpp_flags += f" /fsanitize={args.sanitize}"
+            # MSVC ASan-instrumented STL headers emit annotate_string/annotate_vector
+            # symbols; the uninstrumented .cu objects emit the same symbols with the
+            # opposite value and link.exe rejects the mix (LNK2038). Disabling the
+            # container annotations realigns both sides at the cost of std::string /
+            # std::vector unused-capacity overflow detection only.
+            if args.sanitize == "address":
+                cpp_flags += " /D_DISABLE_STRING_ANNOTATION=1 /D_DISABLE_VECTOR_ANNOTATION=1"
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
             futures, wall_clock = [], time.perf_counter_ns()
 
@@ -627,7 +646,7 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
                 if "clang/clang.cpp" in cpp_path.replace("\\", "/"):
                     extra_flags = " /wd4624"  # suppress C4624: destructor was implicitly defined as deleted
                 if "fastcall.cpp" in cpp_path:
-                    extra_flags += f' /I"{sysconfig.get_path("include")}" /DPy_LIMITED_API=0x030a0000'  # Python 3.10
+                    extra_flags += f' /I"{python_include_dir}" /DPy_LIMITED_API=0x030a0000'  # Python 3.10
                 cpp_cmd = f'"{args.host_compiler}" {cpp_flags}{extra_flags} -c "{cpp_path}" /Fo"{cpp_out}"'
                 cpp_cmds.append(cpp_cmd)
 
@@ -656,12 +675,22 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
 
                     linkopts.append(quote(cu_out))
 
-                linkopts.append(
-                    f'cudart_static.lib nvrtc_static.lib nvrtc-builtins_static.lib nvptxcompiler_static.lib ws2_32.lib user32.lib /LIBPATH:"{cuda_home}/lib/x64"'
-                )
+                if args.use_dynamic_cuda:
+                    linkopts.append(
+                        f'cudart.lib nvrtc.lib nvptxcompiler_static.lib ws2_32.lib user32.lib /LIBPATH:"{cuda_home}/lib/x64"'
+                    )
+                else:
+                    linkopts.append(
+                        f'cudart_static.lib nvrtc_static.lib nvrtc-builtins_static.lib nvptxcompiler_static.lib ws2_32.lib user32.lib /LIBPATH:"{cuda_home}/lib/x64"'
+                    )
 
                 if args.libmathdx_path:
-                    linkopts.append(f'nvJitLink_static.lib /LIBPATH:"{args.libmathdx_path}/lib/x64" mathdx_static.lib')
+                    if args.use_dynamic_cuda:
+                        linkopts.append(f'nvJitLink.lib /LIBPATH:"{args.libmathdx_path}/lib/x64" mathdx.lib')
+                    else:
+                        linkopts.append(
+                            f'nvJitLink_static.lib /LIBPATH:"{args.libmathdx_path}/lib/x64" mathdx_static.lib'
+                        )
 
             if args.jobs <= 1:
                 with ScopedTimer("build_cuda", active=args.verbose):
@@ -680,9 +709,11 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
                 elapsed = (time.perf_counter_ns() - wall_clock) / 1000000.0
                 print(f"build took {elapsed:.2f} ms ({args.jobs:d} workers)")
 
-        # Python stable ABI library for fastcall.cpp
+        # Python stable ABI library for fastcall.cpp. /DELAYLOAD defers loading
+        # python3.dll until a Python C API function is actually called -- without
+        # it, warp.dll cannot be LoadLibrary'd from non-Python C++ hosts.
         python_libs_dir = os.path.join(sys.base_prefix, "libs")
-        linkopts.append(f'python3.lib /LIBPATH:"{python_libs_dir}"')
+        linkopts.append(f'python3.lib /LIBPATH:"{python_libs_dir}" /DELAYLOAD:python3.dll delayimp.lib')
 
         with ScopedTimer("link", active=args.verbose):
             link_cmd = f'"{host_linker}" {" ".join(linkopts + libs)} /out:"{dll_path}"'
@@ -690,8 +721,8 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
 
     else:
         # Unix compilation
-        cuda_compiler = "clang++" if getattr(args, "clang_build_toolchain", False) else "nvcc"
-        cpp_compiler = "clang++" if getattr(args, "clang_build_toolchain", False) else args.host_compiler
+        cuda_compiler = "clang++" if args.clang_build_toolchain else "nvcc"
+        cpp_compiler = "clang++" if args.clang_build_toolchain else args.host_compiler
 
         # Build include paths for LLVM and CUDA
         llvm_include_paths = get_llvm_include_paths(args, warp_home_path, mode, arch)
@@ -713,7 +744,7 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
         cpp_flags = f'-Werror -Wuninitialized {version} --std=c++17 -fno-rtti -D{cuda_enabled} -D{mathdx_enabled} -D{cuda_compat_enabled} -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -D_GLIBCXX_USE_CXX11_ABI=0 -I"{native_dir}" {includes} '
 
         if mode == "debug":
-            cpp_flags += "-O0 -g -D_DEBUG -DWP_ENABLE_DEBUG=1 -fkeep-inline-functions"
+            cpp_flags += "-Og -g -D_DEBUG -DWP_ENABLE_DEBUG=1"
 
         if mode == "release":
             cpp_flags += "-O3 -DNDEBUG -DWP_ENABLE_DEBUG=0"
@@ -723,6 +754,9 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
 
         if args.fast_math:
             cpp_flags += " -ffast-math -DWP_FAST_MATH"
+
+        if args.sanitize:
+            cpp_flags += f" -fsanitize={args.sanitize}"
 
         ld_inputs = []
 
@@ -735,7 +769,7 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
                 ld_inputs.append(quote(cpp_out))
                 extra_flags = ""
                 if "fastcall.cpp" in cpp_path:
-                    extra_flags = f' -I"{sysconfig.get_path("include")}" -DPy_LIMITED_API=0x030a0000'  # Python 3.10
+                    extra_flags = f' -I"{python_include_dir}" -DPy_LIMITED_API=0x030a0000'  # Python 3.10
                 cpp_cmd = f'{cpp_compiler} {cpp_flags}{extra_flags} -c "{cpp_path}" -o "{cpp_out}"'
                 cpp_cmds.append(cpp_cmd)
 
@@ -757,9 +791,9 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
 
                     if cuda_compiler == "nvcc":
                         if mode == "debug":
-                            cuda_cmd = f'{nvcc_cmd} --std=c++17 -g -G -O0 --compiler-options -fPIC,-fvisibility=hidden,-fvisibility-inlines-hidden -D_DEBUG -D_ITERATOR_DEBUG_LEVEL=0 -line-info {" ".join(_nvcc_opts)} -DWP_ENABLE_CUDA=1 -I"{native_dir}" -D{mathdx_enabled} {libmathdx_includes} -o "{cu_out}" -c "{cu_path}"'
+                            cuda_cmd = f'{nvcc_cmd} --std=c++17 -g -G -O0 --compiler-options -fPIC,-fvisibility=hidden,-fvisibility-inlines-hidden,-D_GLIBCXX_USE_CXX11_ABI=0 -D_DEBUG -D_ITERATOR_DEBUG_LEVEL=0 -line-info {" ".join(_nvcc_opts)} -DWP_ENABLE_CUDA=1 -I"{native_dir}" -D{mathdx_enabled} {libmathdx_includes} -o "{cu_out}" -c "{cu_path}"'
                         elif mode == "release":
-                            cuda_cmd = f'{nvcc_cmd} --std=c++17 -O3 --compiler-options -fPIC,-fvisibility=hidden,-fvisibility-inlines-hidden {" ".join(_nvcc_opts)} -DNDEBUG -DWP_ENABLE_CUDA=1 -I"{native_dir}" -D{mathdx_enabled} {libmathdx_includes} -o "{cu_out}" -c "{cu_path}"'
+                            cuda_cmd = f'{nvcc_cmd} --std=c++17 -O3 --compiler-options -fPIC,-fvisibility=hidden,-fvisibility-inlines-hidden,-D_GLIBCXX_USE_CXX11_ABI=0 {" ".join(_nvcc_opts)} -DNDEBUG -DWP_ENABLE_CUDA=1 -I"{native_dir}" -D{mathdx_enabled} {libmathdx_includes} -o "{cu_out}" -c "{cu_path}"'
                     else:
                         # Use Clang compiler
                         if mode == "debug":
@@ -771,12 +805,20 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
 
                     ld_inputs.append(quote(cu_out))
 
-                ld_inputs.append(
-                    f'-L"{cuda_home}/lib64" -lcudart_static -lnvrtc_static -lnvrtc-builtins_static -lnvptxcompiler_static -lpthread -ldl -lrt'
-                )
+                if args.use_dynamic_cuda:
+                    ld_inputs.append(
+                        f'-L"{cuda_home}/lib64" -L"{cuda_home}/lib" -lcudart -lnvrtc -lnvptxcompiler_static -lpthread -ldl -lrt'
+                    )
+                else:
+                    ld_inputs.append(
+                        f'-L"{cuda_home}/lib64" -lcudart_static -lnvrtc_static -lnvrtc-builtins_static -lnvptxcompiler_static -lpthread -ldl -lrt'
+                    )
 
                 if args.libmathdx_path:
-                    ld_inputs.append(f"-lnvJitLink_static -L{args.libmathdx_path}/lib -lmathdx_static")
+                    if args.use_dynamic_cuda:
+                        ld_inputs.append(f"-lnvJitLink -L{args.libmathdx_path}/lib -lmathdx")
+                    else:
+                        ld_inputs.append(f"-lnvJitLink_static -L{args.libmathdx_path}/lib -lmathdx_static")
 
             if args.jobs <= 1:
                 with ScopedTimer("build_cuda", active=args.verbose):
@@ -795,9 +837,9 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
                 elapsed = (time.perf_counter_ns() - wall_clock) / 1000000.0
                 print(f"build took {elapsed:.2f} ms ({args.jobs:d} workers)")
 
-        # Python C API symbols from fastcall.cpp are left unresolved at link time and
-        # resolved at runtime by the interpreter. A post-link nm -u check (below) verifies
-        # that only Python symbols are unresolved.
+        # Python C API function symbols from fastcall.cpp are left unresolved at link
+        # time and resolved lazily on first call by the interpreter. A post-link nm/readelf
+        # check (below) verifies no eagerly-resolved data symbols remain.
         if sys.platform == "darwin":
             # macOS linker rejects undefined symbols by default; this is the standard
             # convention for Python extensions (used by CPython, pybind11).
@@ -805,13 +847,17 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
             opt_exclude_libs = ""
             opt_static_runtime = ""
         else:
-            opt_undefined = ""
+            # -z lazy: pin lazy PLT binding so dlopen(..., RTLD_LAZY) works for non-Python
+            # C++ hosts even on distros that flip the default to -z now via RELRO.
+            opt_undefined = "-Wl,-z,lazy"
             opt_exclude_libs = "-Wl,--exclude-libs,ALL"
             opt_static_runtime = f"-static-libstdc++ -static-libgcc -Wl,--version-script={native_dir}/warp.map"
 
+        sanitize_ld = f" -fsanitize={args.sanitize}" if args.sanitize else ""
+
         with ScopedTimer("link", active=args.verbose):
             origin = "@loader_path" if (sys.platform == "darwin") else "$ORIGIN"
-            link_cmd = f"{cpp_compiler} {version} -shared -Wl,-rpath,'{origin}' {opt_static_runtime} {opt_undefined} {opt_exclude_libs} -o '{dll_path}' {' '.join(ld_inputs + libs)}"
+            link_cmd = f"{cpp_compiler} {version} -shared -Wl,-rpath,'{origin}' {opt_static_runtime} {opt_undefined} {opt_exclude_libs}{sanitize_ld} -o '{dll_path}' {' '.join(ld_inputs + libs)}"
             run_cmd(link_cmd)
 
             # Verify that only Python C API symbols are truly undefined.
@@ -846,6 +892,28 @@ def build_dll_for_arch(args, dll_path, cpp_paths, cu_paths, arch, libs: list[str
             unexpected = [sym for sym in undefined if not sym.startswith(("Py", "_Py"))]
             if unexpected:
                 raise RuntimeError("Unexpected undefined symbols in " + dll_path + ":\n" + "\n".join(unexpected))
+
+            # Forbid eagerly-resolved Python data symbol references. Function imports
+            # go through PLT/GOT (R_*_JUMP_SLOT) and are lazily bound; data imports use
+            # R_*_GLOB_DAT and are resolved at load time, which would break dlopen()
+            # from non-Python C++ hosts.
+            if sys.platform != "darwin":
+                relocs_output = subprocess.check_output(["readelf", "-r", "--wide", dll_path])
+                eager_py_data = []
+                for line in relocs_output.decode().splitlines():
+                    fields = line.split()
+                    if len(fields) < 5 or "GLOB_DAT" not in fields[2]:
+                        continue
+                    sym_name = fields[4]
+                    if sym_name.startswith(("Py", "_Py")):
+                        eager_py_data.append(sym_name)
+                if eager_py_data:
+                    raise RuntimeError(
+                        "Eagerly-resolved Python data symbols in "
+                        + dll_path
+                        + " (would break loading from non-Python hosts):\n"
+                        + "\n".join(eager_py_data)
+                    )
 
             # Strip symbols to reduce the binary size
             if mode == "release":

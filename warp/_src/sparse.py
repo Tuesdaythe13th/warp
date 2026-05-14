@@ -11,6 +11,7 @@ from numpy import eye
 
 import warp as wp
 import warp._src.utils
+from warp._src.logger import log_warning
 from warp._src.types import (
     Array,
     Cols,
@@ -192,9 +193,10 @@ class BsrMatrix(Generic[_BlockType]):
 
         Deprecated; prefer :meth:`notify_nnz_changed` instead, which will make sure to resize arrays if necessary.
         """
-        wp._src.utils.warn(
+        log_warning(
             "The `copy_nnz_async` method is deprecated and will be removed in a future version. Prefer `notify_nnz_changed` instead.",
-            DeprecationWarning,
+            category=DeprecationWarning,
+            stacklevel=2,
         )
         self._copy_nnz_async()
 
@@ -430,6 +432,7 @@ def _optional_ctypes_event(event: wp.Event | None):
 
 _zero_value_masks = {
     wp.float16: 0x7FFF,
+    wp.bfloat16: 0x7FFF,
     wp.float32: 0x7FFFFFFF,
     wp.float64: 0x7FFFFFFFFFFFFFFF,
     wp.int8: 0xFF,

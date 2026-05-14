@@ -21,6 +21,19 @@ import warp.tests.aot.aux_test_mixed_generic_kernels
 import warp.tests.aot.aux_test_mixed_regular_and_generic
 from warp.tests.unittest_utils import *
 
+# Use generic (portable) CPU compilation for AOT tests — these tests exercise
+# caching/hashing behavior, not CPU ISA features, and the -march=native
+# portability warning would cause CheckOutput failures.
+for _mod in (
+    warp.tests.aot.aux_test_generic_multiple_overloads,
+    warp.tests.aot.aux_test_generic_no_overloads,
+    warp.tests.aot.aux_test_generic_one_overload,
+    warp.tests.aot.aux_test_hash_reload,
+    warp.tests.aot.aux_test_mixed_generic_kernels,
+    warp.tests.aot.aux_test_mixed_regular_and_generic,
+):
+    wp.set_module_options({"cpu_compiler_flags": ""}, _mod)
+
 ADD_KERNEL_START = """# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import warp as wp
@@ -400,7 +413,7 @@ def test_generic_kernel_no_overloads_with_regular_kernel(test, device):
     )
 
     # This should succeed with a warning about the generic kernel without overloads
-    with contextlib.redirect_stdout(io.StringIO()) as f:
+    with contextlib.redirect_stderr(io.StringIO()) as f:
         wp.compile_aot_module(warp.tests.aot.aux_test_mixed_regular_and_generic, device)
 
     # Verify a warning was issued
@@ -434,7 +447,7 @@ def test_mixed_generic_kernels_some_without_overloads(test, device):
     )
 
     # This should succeed with a warning about the generic kernel without overloads
-    with contextlib.redirect_stdout(io.StringIO()) as f:
+    with contextlib.redirect_stderr(io.StringIO()) as f:
         wp.compile_aot_module(warp.tests.aot.aux_test_mixed_generic_kernels, device, strip_hash=False)
 
     # Verify a warning was issued

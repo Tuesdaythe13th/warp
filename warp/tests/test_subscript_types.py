@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for subscript-style type annotations (wp.array[float], wp.types.Vector[float, Literal[3]], etc.)."""
+"""Tests for subscript-style type annotations on arrays and tiles, plus the internal Vector/Matrix/Quaternion/Transformation generics."""
 
 import unittest
 from typing import Any, Literal, TypeVar, get_origin
@@ -14,6 +14,10 @@ from warp._src.types import (
     ARRAY_TYPE_FABRIC_INDEXED,
     ARRAY_TYPE_INDEXED,
     ARRAY_TYPE_REGULAR,
+    Matrix,
+    Quaternion,
+    Transformation,
+    Vector,
     _ArrayAnnotation,
     _ArrayAnnotationBase,
     _IndexedArrayAnnotation,
@@ -48,7 +52,7 @@ def test_subscript_kernel_actually_runs(test, device):
 
 @wp.kernel
 def vector_kernel(
-    positions: wp.array[wp.types.Vector[wp.float32, Literal[3]]],
+    positions: wp.array[Vector[wp.float32, Literal[3]]],
     output: wp.array[float],
 ):
     i = wp.tid()
@@ -153,8 +157,8 @@ def generic_scale_subscript(x: wp.array[Any], s: Any):
     x[i] = s * x[i]
 
 
-wp.overload(generic_scale_subscript, [wp.array(dtype=wp.float32), wp.float32])
-wp.overload(generic_scale_subscript, [wp.array(dtype=wp.float64), wp.float64])
+wp.overload(generic_scale_subscript, [wp.array[wp.float32], wp.float32])
+wp.overload(generic_scale_subscript, [wp.array[wp.float64], wp.float64])
 
 
 def test_subscript_generic_kernel(test, device):
@@ -189,6 +193,21 @@ def test_subscript_indexedarray_kernel(test, device):
 
     wp.launch(indexed_add, dim=n, inputs=[iarr, out], device=device)
     np.testing.assert_allclose(out.numpy(), [1.0, 3.0, 5.0, 7.0, 9.0])
+
+
+def test_subscript_local_dtype_unique_kernel(test, device):
+    """Test subscript annotations with local dtype bindings in unique-module kernels."""
+    dtype = wp.float16
+
+    @wp.kernel(module="unique")
+    def local_dtype_kernel(input: wp.array2d[dtype], output: wp.array[dtype]):
+        output[0] = input[0, 0] + dtype(1.0)
+
+    input_data = wp.full((1, 1), 2.0, dtype=dtype, device=device)
+    output = wp.zeros(1, dtype=dtype, device=device)
+
+    wp.launch(local_dtype_kernel, dim=1, inputs=[input_data, output], device=device)
+    np.testing.assert_allclose(output.numpy(), [3.0], rtol=1.0e-3)
 
 
 def test_subscript_non_array_input(test, device):
@@ -293,45 +312,45 @@ class TestSubscriptTypes(unittest.TestCase):
 
     def test_vector_subscript_syntax(self):
         """Test Vector subscript syntax."""
-        vec_type = wp.types.Vector[float, Literal[3]]
+        vec_type = Vector[float, Literal[3]]
         self.assertEqual(vec_type._length_, 3)
         self.assertIs(vec_type, wp.types.vector(3, wp.float32))
 
         # Bare integer (runtime only)
-        vec_type2 = wp.types.Vector[wp.float64, 4]
+        vec_type2 = Vector[wp.float64, 4]
         self.assertEqual(vec_type2._length_, 4)
 
     def test_matrix_subscript_syntax(self):
         """Test Matrix subscript syntax."""
-        mat_type = wp.types.Matrix[float, Literal[3], Literal[3]]
+        mat_type = Matrix[float, Literal[3], Literal[3]]
         self.assertEqual(mat_type._shape_, (3, 3))
         self.assertIs(mat_type, wp.types.matrix((3, 3), wp.float32))
 
         # Non-square matrix
-        mat_type2 = wp.types.Matrix[wp.float64, Literal[2], Literal[4]]
+        mat_type2 = Matrix[wp.float64, Literal[2], Literal[4]]
         self.assertEqual(mat_type2._shape_, (2, 4))
 
     def test_quaternion_subscript_syntax(self):
         """Test Quaternion subscript syntax."""
-        quat_type = wp.types.Quaternion[wp.float32]
+        quat_type = Quaternion[wp.float32]
         self.assertIs(quat_type, wp.types.quaternion(wp.float32))
 
-        quat_type2 = wp.types.Quaternion[wp.float64]
+        quat_type2 = Quaternion[wp.float64]
         self.assertIs(quat_type2, wp.types.quaternion(wp.float64))
 
         # Verify caching
-        self.assertIs(wp.types.Quaternion[wp.float32], wp.types.Quaternion[wp.float32])
+        self.assertIs(Quaternion[wp.float32], Quaternion[wp.float32])
 
     def test_transformation_subscript_syntax(self):
         """Test Transformation subscript syntax."""
-        xform_type = wp.types.Transformation[wp.float32]
+        xform_type = Transformation[wp.float32]
         self.assertIs(xform_type, wp.types.transformation(wp.float32))
 
-        xform_type2 = wp.types.Transformation[wp.float64]
+        xform_type2 = Transformation[wp.float64]
         self.assertIs(xform_type2, wp.types.transformation(wp.float64))
 
         # Verify caching
-        self.assertIs(wp.types.Transformation[wp.float32], wp.types.Transformation[wp.float32])
+        self.assertIs(Transformation[wp.float32], Transformation[wp.float32])
 
     def test_tile_subscript_syntax(self):
         """Test tile subscript annotation syntax."""
@@ -359,12 +378,12 @@ class TestSubscriptTypes(unittest.TestCase):
     def test_subscript_identity(self):
         """Test that subscript and factory functions return identical cached types."""
         # Literal and bare int return same cached type
-        self.assertIs(wp.types.Vector[wp.float32, Literal[3]], wp.types.Vector[wp.float32, 3])
-        self.assertIs(wp.types.Vector[wp.float32, Literal[3]], wp.types.vector(3, wp.float32))
+        self.assertIs(Vector[wp.float32, Literal[3]], Vector[wp.float32, 3])
+        self.assertIs(Vector[wp.float32, Literal[3]], wp.types.vector(3, wp.float32))
 
         # Matrix identity
         self.assertIs(
-            wp.types.Matrix[wp.float32, Literal[3], Literal[3]],
+            Matrix[wp.float32, Literal[3], Literal[3]],
             wp.types.matrix((3, 3), wp.float32),
         )
 
@@ -372,23 +391,23 @@ class TestSubscriptTypes(unittest.TestCase):
         """Test error handling for invalid subscript parameters."""
         # Vector errors
         with self.assertRaisesRegex(TypeError, r"requires 2 parameters"):
-            wp.types.Vector[float]
+            Vector[float]
 
         with self.assertRaisesRegex(TypeError, r"positive integer"):
-            wp.types.Vector[float, -1]
+            Vector[float, -1]
 
         with self.assertRaisesRegex(TypeError, r"positive integer"):
-            wp.types.Vector[float, 0]
+            Vector[float, 0]
 
         with self.assertRaisesRegex(TypeError, r"Expected a single Literal value"):
-            wp.types.Vector[float, Literal[2, 3]]
+            Vector[float, Literal[2, 3]]
 
         # Matrix errors
         with self.assertRaisesRegex(TypeError, r"requires 3 parameters"):
-            wp.types.Matrix[float, 3]
+            Matrix[float, 3]
 
         with self.assertRaisesRegex(TypeError, r"positive integer"):
-            wp.types.Matrix[float, -1, 3]
+            Matrix[float, -1, 3]
 
         # Array errors
         with self.assertRaisesRegex(TypeError, r"Expected a single Literal value"):
@@ -423,14 +442,14 @@ class TestSubscriptTypes(unittest.TestCase):
         self.assertTrue(is_array(wp.indexedfabricarray[float]))
 
         # Vector type has required attributes
-        vec_type = wp.types.Vector[float, Literal[3]]
+        vec_type = Vector[float, Literal[3]]
         self.assertTrue(type_is_vector(vec_type))
         self.assertTrue(hasattr(vec_type, "_wp_generic_type_hint_"))
         self.assertTrue(hasattr(vec_type, "_wp_type_params_"))
         self.assertTrue(hasattr(vec_type, "_wp_scalar_type_"))
 
         # Matrix type has required attributes
-        mat_type = wp.types.Matrix[float, Literal[3], Literal[3]]
+        mat_type = Matrix[float, Literal[3], Literal[3]]
         self.assertTrue(type_is_matrix(mat_type))
         self.assertTrue(hasattr(mat_type, "_wp_generic_type_hint_"))
 
@@ -574,9 +593,9 @@ class TestSubscriptTypes(unittest.TestCase):
 
         # Should return a _GenericAlias, not a vec_t class
         # Note: dtype-first order (T=Scalar, N=Length)
-        result = wp.types.Vector[T, N]
+        result = Vector[T, N]
         self.assertTrue(hasattr(result, "__origin__"))
-        self.assertEqual(get_origin(result), wp.types.Vector)
+        self.assertEqual(get_origin(result), Vector)
 
     def test_array_type_id_with_annotations(self):
         """array_type_id() returns correct constants for annotation objects."""
@@ -685,6 +704,12 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestSubscriptTypes, "test_subscript_generic_kernel", test_subscript_generic_kernel, devices=devices)
+add_function_test(
+    TestSubscriptTypes,
+    "test_subscript_local_dtype_unique_kernel",
+    test_subscript_local_dtype_unique_kernel,
+    devices=devices,
+)
 add_function_test(TestSubscriptTypes, "test_subscript_non_array_input", test_subscript_non_array_input, devices=devices)
 add_function_test(TestSubscriptTypes, "test_subscript_dtype_mismatch", test_subscript_dtype_mismatch, devices=devices)
 add_function_test(TestSubscriptTypes, "test_subscript_ndim_mismatch", test_subscript_ndim_mismatch, devices=devices)

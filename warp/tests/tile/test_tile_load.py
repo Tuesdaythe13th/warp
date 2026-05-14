@@ -22,18 +22,17 @@ TWO_N = wp.constant(TILE_N * 2)
 
 TILE_OFFSET = 5
 
-# Non-power-of-two tile size — forces the scalar fallback path for 2D tiles
-# (not divisible by float4, so the vectorized path is skipped);
-# 1D/3D tiles always use the scalar path regardless of tile size
+# Non-power-of-two tile size — forces the scalar fallback path for all dimensions
+# (not divisible by float4, so the vectorized path is skipped)
 TILE_NPOT = wp.constant(17)
 TILE_NPOT_3D = wp.constant(7)
 
 
 @wp.kernel
 def tile_load_1d_sliced_scalar_kernel(
-    input: wp.array1d(dtype=float),
-    out_full: wp.array1d(dtype=float),
-    out_sliced: wp.array1d(dtype=float),
+    input: wp.array1d[float],
+    out_full: wp.array1d[float],
+    out_sliced: wp.array1d[float],
 ):
     full = wp.tile_load(input, shape=TILE_NPOT, storage="shared")
     sliced = wp.tile_load(input[::2], shape=TILE_NPOT, storage="shared")
@@ -44,9 +43,9 @@ def tile_load_1d_sliced_scalar_kernel(
 
 @wp.kernel
 def tile_load_2d_sliced_scalar_kernel(
-    input: wp.array2d(dtype=float),
-    out_full: wp.array2d(dtype=float),
-    out_sliced: wp.array2d(dtype=float),
+    input: wp.array2d[float],
+    out_full: wp.array2d[float],
+    out_sliced: wp.array2d[float],
 ):
     full = wp.tile_load(input, shape=(TILE_NPOT, TILE_NPOT), storage="shared")
     sliced = wp.tile_load(input[::2, ::2], shape=(TILE_NPOT, TILE_NPOT), storage="shared")
@@ -57,9 +56,9 @@ def tile_load_2d_sliced_scalar_kernel(
 
 @wp.kernel
 def tile_load_3d_sliced_scalar_kernel(
-    input: wp.array3d(dtype=float),
-    out_full: wp.array3d(dtype=float),
-    out_sliced: wp.array3d(dtype=float),
+    input: wp.array3d[float],
+    out_full: wp.array3d[float],
+    out_sliced: wp.array3d[float],
 ):
     full = wp.tile_load(input, shape=(TILE_NPOT_3D, TILE_NPOT_3D, TILE_NPOT_3D), storage="shared")
     sliced = wp.tile_load(input[::2, ::2, ::2], shape=(TILE_NPOT_3D, TILE_NPOT_3D, TILE_NPOT_3D), storage="shared")
@@ -70,8 +69,8 @@ def tile_load_3d_sliced_scalar_kernel(
 
 @wp.kernel
 def tile_store_1d_sliced_scalar_kernel(
-    input: wp.array1d(dtype=float),
-    output: wp.array1d(dtype=float),
+    input: wp.array1d[float],
+    output: wp.array1d[float],
 ):
     t = wp.tile_load(input, shape=TILE_NPOT, storage="shared")
     wp.tile_store(output[::2], t)
@@ -79,8 +78,8 @@ def tile_store_1d_sliced_scalar_kernel(
 
 @wp.kernel
 def tile_store_2d_sliced_scalar_kernel(
-    input: wp.array2d(dtype=float),
-    output: wp.array2d(dtype=float),
+    input: wp.array2d[float],
+    output: wp.array2d[float],
 ):
     t = wp.tile_load(input, shape=(TILE_NPOT, TILE_NPOT), storage="shared")
     wp.tile_store(output[::2, ::2], t)
@@ -88,11 +87,11 @@ def tile_store_2d_sliced_scalar_kernel(
 
 @wp.kernel
 def tile_load_1d_kernel(
-    input: wp.array1d(dtype=float),
-    out_full: wp.array1d(dtype=float),
-    out_padded: wp.array1d(dtype=float),
-    out_sliced: wp.array1d(dtype=float),
-    out_offset: wp.array1d(dtype=float),
+    input: wp.array1d[float],
+    out_full: wp.array1d[float],
+    out_padded: wp.array1d[float],
+    out_sliced: wp.array1d[float],
+    out_offset: wp.array1d[float],
 ):
     full0 = wp.tile_load(input, TILE_M)
     full1 = wp.tile_load(input, shape=TILE_M)
@@ -114,11 +113,11 @@ def tile_load_1d_kernel(
 
 @wp.kernel
 def tile_load_2d_kernel(
-    input: wp.array2d(dtype=float),
-    out_full: wp.array2d(dtype=float),
-    out_padded: wp.array2d(dtype=float),
-    out_sliced: wp.array2d(dtype=float),
-    out_offset: wp.array2d(dtype=float),
+    input: wp.array2d[float],
+    out_full: wp.array2d[float],
+    out_padded: wp.array2d[float],
+    out_sliced: wp.array2d[float],
+    out_offset: wp.array2d[float],
 ):
     full0 = wp.tile_load(input, shape=(TILE_M, TILE_N))
     padded0 = wp.tile_load(input, shape=(TILE_M, TILE_N), offset=(TILE_OFFSET, TILE_OFFSET))
@@ -132,11 +131,11 @@ def tile_load_2d_kernel(
 
 @wp.kernel
 def tile_load_3d_kernel(
-    input: wp.array3d(dtype=float),
-    out_full: wp.array3d(dtype=float),
-    out_padded: wp.array3d(dtype=float),
-    out_sliced: wp.array3d(dtype=float),
-    out_offset: wp.array3d(dtype=float),
+    input: wp.array3d[float],
+    out_full: wp.array3d[float],
+    out_padded: wp.array3d[float],
+    out_sliced: wp.array3d[float],
+    out_offset: wp.array3d[float],
 ):
     full0 = wp.tile_load(input, shape=(TILE_M, TILE_N, TILE_O))
     padded0 = wp.tile_load(input, shape=(TILE_M, TILE_N, TILE_O), offset=(TILE_OFFSET, TILE_OFFSET, TILE_OFFSET))
@@ -150,11 +149,11 @@ def tile_load_3d_kernel(
 
 @wp.kernel
 def tile_load_4d_kernel(
-    input: wp.array4d(dtype=float),
-    out_full: wp.array4d(dtype=float),
-    out_padded: wp.array4d(dtype=float),
-    out_sliced: wp.array4d(dtype=float),
-    out_offset: wp.array4d(dtype=float),
+    input: wp.array4d[float],
+    out_full: wp.array4d[float],
+    out_padded: wp.array4d[float],
+    out_sliced: wp.array4d[float],
+    out_offset: wp.array4d[float],
 ):
     full0 = wp.tile_load(input, shape=(TILE_M, TILE_N, TILE_O, TILE_P))
     padded0 = wp.tile_load(
@@ -222,7 +221,7 @@ def test_tile_load(kernel, ndim):
 
 
 @wp.kernel
-def tile_load_indexed(x: wp.array2d(dtype=float), y: wp.array2d(dtype=float), z: wp.array2d(dtype=float)):
+def tile_load_indexed(x: wp.array2d[float], y: wp.array2d[float], z: wp.array2d[float]):
     i, j = wp.tid()
 
     evens_M = wp.tile_arange(HALF_M, dtype=int, storage="shared") * 2
@@ -266,7 +265,7 @@ def test_tile_load_indexed(test, device):
 
 
 @wp.kernel(enable_backward=False)
-def tile_load_indexed_non_owning(a: wp.array(dtype=float), b: wp.array(dtype=float)):
+def tile_load_indexed_non_owning(a: wp.array[float], b: wp.array[float]):
     indices = wp.tile_arange(HALF_M, dtype=int, storage="shared") * 2
     indices_non_owning = wp.tile_reshape(indices, shape=(HALF_M,))
 
@@ -291,7 +290,7 @@ def add_one(x: int):
 
 
 @wp.kernel
-def tile_store_indexed(x: wp.array2d(dtype=float), y: wp.array2d(dtype=float), z: wp.array2d(dtype=float)):
+def tile_store_indexed(x: wp.array2d[float], y: wp.array2d[float], z: wp.array2d[float]):
     i, j = wp.tid()
 
     t = wp.tile_load(x, shape=(TILE_M, TILE_N), offset=(i * TILE_M, j * TILE_N), storage="register")
@@ -339,7 +338,7 @@ def test_tile_store_indexed(test, device):
 
 
 @wp.kernel
-def tile_atomic_add_indexed(x: wp.array2d(dtype=float), y: wp.array2d(dtype=float)):
+def tile_atomic_add_indexed(x: wp.array2d[float], y: wp.array2d[float]):
     i, j = wp.tid()
 
     t = wp.tile_load(x, shape=(TILE_M, TILE_N), offset=(i * TILE_M, j * TILE_N), storage="register")
@@ -377,8 +376,8 @@ def test_tile_atomic_add_indexed(test, device):
 
 @wp.kernel
 def tile_load_unaligned_kernel(
-    input: wp.array2d(dtype=float),
-    output: wp.array2d(dtype=float),
+    input: wp.array2d[float],
+    output: wp.array2d[float],
 ):
     t = wp.tile_load(input, shape=(TILE_M, TILE_N), offset=(1, 1), storage="shared")
     wp.tile_store(output, t, offset=(1, 1))
@@ -420,8 +419,8 @@ def test_tile_load_unaligned(test, device):
 
 @wp.kernel
 def tile_load_aligned_small_kernel(
-    input: wp.array2d(dtype=float),
-    output: wp.array2d(dtype=float),
+    input: wp.array2d[float],
+    output: wp.array2d[float],
 ):
     t = wp.tile_load(input, shape=(3, 3), offset=(0, 0), storage="shared")
     wp.tile_store(output, t, offset=(0, 0))
@@ -460,8 +459,8 @@ TILE_OFFSET_Y = 8
 
 @wp.kernel
 def test_tile_load_aligned_offset_unaligned_size_kernel(
-    input: wp.array2d(dtype=float),
-    output: wp.array2d(dtype=float),
+    input: wp.array2d[float],
+    output: wp.array2d[float],
 ):
     # Load a 5x5 tile from the input array starting at offset (0,8)
     # and store it in shared memory
@@ -508,8 +507,207 @@ def test_tile_load_aligned_offset_unaligned_size(test, device):
     assert_np_equal(output_array.numpy()[TILE_WIDTH:, :], np.zeros((remaining_height, TILE_M)))
 
 
+ALIGNED_TILE = wp.constant(32)
+
+
 @wp.kernel
-def test_tile_load_stride_unaligned_kernel(input: wp.array2d(dtype=wp.float32), output: wp.array2d(dtype=wp.float32)):
+def aligned_param_2d_kernel(input: wp.array2d[float], output: wp.array2d[float]):
+    """Shared tile load/store with aligned=True — skips runtime alignment checks."""
+    i, j = wp.tid()
+    tile = wp.tile_load(
+        input,
+        shape=(ALIGNED_TILE, ALIGNED_TILE),
+        offset=(i * ALIGNED_TILE, j * ALIGNED_TILE),
+        storage="shared",
+        aligned=True,
+    )
+    wp.tile_store(output, tile, offset=(i * ALIGNED_TILE, j * ALIGNED_TILE), aligned=True)
+
+
+def test_tile_load_aligned_param_2d(test, device):
+    """aligned=True with properly aligned 2D shared tile produces correct results."""
+    rng = np.random.default_rng(42)
+    size = 128
+    arr_np = rng.random((size, size)).astype(np.float32)
+    input = wp.array(arr_np, dtype=float, device=device)
+    output = wp.zeros((size, size), dtype=float, device=device)
+
+    wp.launch_tiled(
+        aligned_param_2d_kernel,
+        dim=[size // ALIGNED_TILE, size // ALIGNED_TILE],
+        inputs=[input, output],
+        block_dim=128,
+        device=device,
+    )
+
+    np.testing.assert_allclose(output.numpy(), arr_np, rtol=1e-5)
+
+
+PARTIAL_TILE = wp.constant(32)
+PARTIAL_ROWS = wp.constant(50)  # not a multiple of PARTIAL_TILE
+
+
+@wp.kernel
+def partial_tile_outer_dim_kernel(
+    input: wp.array2d[float],
+    output: wp.array2d[float],
+):
+    """Load tiles where the last tile's outer dim extends past the array.
+
+    With array rows=50 and tile rows=32, tile at offset (32,0) covers rows 32-63
+    but only 50 exist. The vectorized path must NOT be taken for this tile —
+    it should fall to scalar with zero-padding for the OOB rows.
+    """
+    i = wp.tid()
+    t = wp.tile_load(input, shape=(PARTIAL_TILE, PARTIAL_TILE), offset=(i * PARTIAL_TILE, 0), storage="shared")
+    wp.tile_store(output, t, offset=(i * PARTIAL_TILE, 0))
+
+
+def test_tile_load_partial_outer_dim(test, device):
+    """Regression: float4-aligned tile where array outer dim is not a multiple of tile dim.
+
+    On main, the partial tile incorrectly hit the vectorized path because the
+    2D-only vectorization check did not verify that the tile fits within bounds.
+    """
+    rng = np.random.default_rng(42)
+    arr_np = rng.random((PARTIAL_ROWS, PARTIAL_TILE), dtype=np.float32)
+    input = wp.array(arr_np, dtype=float, device=device)
+    # Output is padded to fit 2 full tiles (64 rows)
+    output = wp.zeros((PARTIAL_TILE * 2, PARTIAL_TILE), dtype=float, device=device)
+
+    wp.launch_tiled(
+        partial_tile_outer_dim_kernel,
+        dim=[2],  # 2 tiles: rows 0-31 (full) and rows 32-63 (partial, only 50-32=18 valid)
+        inputs=[input, output],
+        block_dim=128,
+        device=device,
+    )
+
+    out = output.numpy()
+
+    # First tile (rows 0-31): should match input exactly
+    assert_np_equal(out[:PARTIAL_TILE, :], arr_np[:PARTIAL_TILE, :])
+    # Second tile (rows 32-49): valid rows should match input
+    assert_np_equal(out[PARTIAL_TILE:PARTIAL_ROWS, :], arr_np[PARTIAL_TILE:PARTIAL_ROWS, :])
+    # Second tile (rows 50-63): OOB rows should be zero-padded
+    assert_np_equal(out[PARTIAL_ROWS : PARTIAL_TILE * 2, :], np.zeros((PARTIAL_TILE * 2 - PARTIAL_ROWS, PARTIAL_TILE)))
+
+
+VEC3_TILE_M = wp.constant(4)
+VEC3_TILE_N = wp.constant(8)  # 8 vec3s * 12 bytes = 96 bytes, 96 % 16 = 0 → float4-aligned
+
+
+@wp.kernel
+def vec3_vectorized_kernel(
+    input: wp.array2d[wp.vec3],
+    output: wp.array2d[wp.vec3],
+):
+    """2D shared tile load/store roundtrip for vec3 with float4-aligned last dim."""
+    i, j = wp.tid()
+    t = wp.tile_load(
+        input, shape=(VEC3_TILE_M, VEC3_TILE_N), offset=(i * VEC3_TILE_M, j * VEC3_TILE_N), storage="shared"
+    )
+    wp.tile_store(output, t, offset=(i * VEC3_TILE_M, j * VEC3_TILE_N))
+
+
+def test_tile_load_vec3_vectorized(test, device):
+    """Correctness check for 2D vec3 shared tiles with float4-aligned last dim."""
+    rng = np.random.default_rng(42)
+    rows, cols = 16, 16
+    arr_np = rng.random((rows, cols, 3), dtype=np.float32)
+    input = wp.array(arr_np, dtype=wp.vec3, device=device)
+    output = wp.zeros((rows, cols), dtype=wp.vec3, device=device)
+
+    wp.launch_tiled(
+        vec3_vectorized_kernel,
+        dim=[rows // VEC3_TILE_M, cols // VEC3_TILE_N],
+        inputs=[input, output],
+        block_dim=128,
+        device=device,
+    )
+
+    assert_np_equal(output.numpy(), arr_np)
+
+
+# 3D shared tile — exercises the N-D float4 vectorized indexing loop (N=3).
+# Last dim: 8 floats * 4 bytes = 32 bytes, float4-aligned → vectorized path.
+TILE_3D_D0 = wp.constant(4)
+TILE_3D_D1 = wp.constant(4)
+TILE_3D_D2 = wp.constant(8)
+
+
+@wp.kernel
+def shared_3d_vectorized_kernel(
+    input: wp.array3d[float],
+    output: wp.array3d[float],
+):
+    """3D shared tile load/store roundtrip — hits vectorized float4 path."""
+    i, j, k = wp.tid()
+    t = wp.tile_load(
+        input,
+        shape=(TILE_3D_D0, TILE_3D_D1, TILE_3D_D2),
+        offset=(i * TILE_3D_D0, j * TILE_3D_D1, k * TILE_3D_D2),
+        storage="shared",
+    )
+    wp.tile_store(output, t, offset=(i * TILE_3D_D0, j * TILE_3D_D1, k * TILE_3D_D2))
+
+
+def test_tile_load_3d_shared_vectorized(test, device):
+    """Correctness check for 3D shared tiles taking the vectorized float4 path."""
+    rng = np.random.default_rng(42)
+    shape = (8, 8, 16)
+    arr_np = rng.random(shape, dtype=np.float32)
+    input = wp.array(arr_np, dtype=float, device=device)
+    output = wp.zeros(shape, dtype=float, device=device)
+
+    wp.launch_tiled(
+        shared_3d_vectorized_kernel,
+        dim=[shape[0] // TILE_3D_D0, shape[1] // TILE_3D_D1, shape[2] // TILE_3D_D2],
+        inputs=[input, output],
+        block_dim=128,
+        device=device,
+    )
+
+    assert_np_equal(output.numpy(), arr_np)
+
+
+# Coalesced byte-copy path — exercises can_coalesce() and the float* byte-copy loop.
+# mat33 is 36 bytes (> 16 bytes = sizeof(float4)), so it takes the coalesced path.
+COALESCED_TILE = wp.constant(16)
+
+
+@wp.kernel
+def coalesced_mat33_kernel(
+    input: wp.array1d[wp.mat33],
+    output: wp.array1d[wp.mat33],
+):
+    """1D shared tile load/store for mat33 — hits coalesced byte-copy path."""
+    i = wp.tid()
+    t = wp.tile_load(input, shape=(COALESCED_TILE,), offset=(i * COALESCED_TILE,), storage="shared")
+    wp.tile_store(output, t, offset=(i * COALESCED_TILE,))
+
+
+def test_tile_load_coalesced_mat33(test, device):
+    """Correctness check for shared tiles of large types (mat33) via coalesced byte-copy."""
+    rng = np.random.default_rng(42)
+    n = 64
+    arr_np = rng.random((n, 3, 3), dtype=np.float32)
+    input = wp.array(arr_np, dtype=wp.mat33, device=device)
+    output = wp.zeros(n, dtype=wp.mat33, device=device)
+
+    wp.launch_tiled(
+        coalesced_mat33_kernel,
+        dim=[n // COALESCED_TILE],
+        inputs=[input, output],
+        block_dim=128,
+        device=device,
+    )
+
+    np.testing.assert_allclose(output.numpy(), arr_np, rtol=1e-5)
+
+
+@wp.kernel
+def test_tile_load_stride_unaligned_kernel(input: wp.array2d[wp.float32], output: wp.array2d[wp.float32]):
     tile = wp.tile_load(input, shape=(4, 4))
     wp.tile_store(output, tile)
 
@@ -540,7 +738,7 @@ TILE_SIZE = 4
 
 
 @wp.kernel
-def tile_extract_1d_kernel(input: wp.array1d(dtype=float), output: wp.array1d(dtype=float)):
+def tile_extract_1d_kernel(input: wp.array1d[float], output: wp.array1d[float]):
     i = wp.tid()
 
     t = wp.tile_load(input, shape=TILE_SIZE)
@@ -549,7 +747,7 @@ def tile_extract_1d_kernel(input: wp.array1d(dtype=float), output: wp.array1d(dt
 
 
 @wp.kernel
-def tile_extract_2d_kernel(input: wp.array2d(dtype=float), output: wp.array2d(dtype=float)):
+def tile_extract_2d_kernel(input: wp.array2d[float], output: wp.array2d[float]):
     i, j = wp.tid()
 
     t = wp.tile_load(input, shape=(TILE_SIZE, TILE_SIZE))
@@ -558,7 +756,7 @@ def tile_extract_2d_kernel(input: wp.array2d(dtype=float), output: wp.array2d(dt
 
 
 @wp.kernel
-def tile_extract_3d_kernel(input: wp.array3d(dtype=float), output: wp.array3d(dtype=float)):
+def tile_extract_3d_kernel(input: wp.array3d[float], output: wp.array3d[float]):
     i, j, k = wp.tid()
 
     t = wp.tile_load(input, shape=(TILE_SIZE, TILE_SIZE, TILE_SIZE))
@@ -567,7 +765,7 @@ def tile_extract_3d_kernel(input: wp.array3d(dtype=float), output: wp.array3d(dt
 
 
 @wp.kernel
-def tile_extract_4d_kernel(input: wp.array4d(dtype=float), output: wp.array4d(dtype=float)):
+def tile_extract_4d_kernel(input: wp.array4d[float], output: wp.array4d[float]):
     i, j, k, l = wp.tid()
 
     t = wp.tile_load(input, shape=(TILE_SIZE, TILE_SIZE, TILE_SIZE, TILE_SIZE))
@@ -609,7 +807,7 @@ TILE_SIZE = 4
 
 
 @wp.kernel
-def tile_assign_1d_kernel(input: wp.array1d(dtype=float), output: wp.array1d(dtype=float)):
+def tile_assign_1d_kernel(input: wp.array1d[float], output: wp.array1d[float]):
     i = wp.tid()
 
     t = wp.tile_zeros(shape=(TILE_SIZE,), dtype=float)
@@ -621,7 +819,7 @@ def tile_assign_1d_kernel(input: wp.array1d(dtype=float), output: wp.array1d(dty
 
 
 @wp.kernel
-def tile_assign_2d_kernel(input: wp.array2d(dtype=float), output: wp.array2d(dtype=float)):
+def tile_assign_2d_kernel(input: wp.array2d[float], output: wp.array2d[float]):
     i, j = wp.tid()
 
     t = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=float)
@@ -633,7 +831,7 @@ def tile_assign_2d_kernel(input: wp.array2d(dtype=float), output: wp.array2d(dty
 
 
 @wp.kernel
-def tile_assign_3d_kernel(input: wp.array3d(dtype=float), output: wp.array3d(dtype=float)):
+def tile_assign_3d_kernel(input: wp.array3d[float], output: wp.array3d[float]):
     i, j, k = wp.tid()
 
     t = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE, TILE_SIZE), dtype=float)
@@ -645,7 +843,7 @@ def tile_assign_3d_kernel(input: wp.array3d(dtype=float), output: wp.array3d(dty
 
 
 @wp.kernel
-def tile_assign_4d_kernel(input: wp.array4d(dtype=float), output: wp.array4d(dtype=float)):
+def tile_assign_4d_kernel(input: wp.array4d[float], output: wp.array4d[float]):
     i, j, k, l = wp.tid()
 
     t = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE, TILE_SIZE, TILE_SIZE), dtype=float)
@@ -683,7 +881,7 @@ def test_tile_assign(kernel, ndim):
 
 
 @wp.kernel
-def tile_load_fortran_kernel(A: wp.array2d(dtype=float), B: wp.array2d(dtype=float)):
+def tile_load_fortran_kernel(A: wp.array2d[float], B: wp.array2d[float]):
     # tile index
     i, j = wp.tid()
 
@@ -730,12 +928,12 @@ def test_tile_load_fortran(test, device):
 
 
 @wp.func
-def test_tile_load_scoped_func(A: wp.array2d(dtype=float)):
+def test_tile_load_scoped_func(A: wp.array2d[float]):
     A_tile = wp.tile_load(A, shape=(TILE_DIM, TILE_DIM), offset=(0, 0), storage="shared")
 
 
 @wp.kernel
-def test_tile_load_scoped_kernel(A: wp.array2d(dtype=float), B: wp.array2d(dtype=float)):
+def test_tile_load_scoped_kernel(A: wp.array2d[float], B: wp.array2d[float]):
     test_tile_load_scoped_func(A)
     B_tile = wp.tile_load(B, shape=(TILE_DIM, TILE_DIM), offset=(0, 0), storage="shared")
 
@@ -869,6 +1067,13 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestTileLoad, "test_tile_load_stride_unaligned", test_tile_load_stride_unaligned, devices=devices)
+add_function_test(TestTileLoad, "test_tile_load_partial_outer_dim", test_tile_load_partial_outer_dim, devices=devices)
+add_function_test(TestTileLoad, "test_tile_load_vec3_vectorized", test_tile_load_vec3_vectorized, devices=devices)
+add_function_test(TestTileLoad, "test_tile_load_aligned_param_2d", test_tile_load_aligned_param_2d, devices=devices)
+add_function_test(
+    TestTileLoad, "test_tile_load_3d_shared_vectorized", test_tile_load_3d_shared_vectorized, devices=devices
+)
+add_function_test(TestTileLoad, "test_tile_load_coalesced_mat33", test_tile_load_coalesced_mat33, devices=devices)
 
 add_function_test(TestTileLoad, "test_tile_extract_1d", test_tile_extract(tile_extract_1d_kernel, 1), devices=devices)
 add_function_test(TestTileLoad, "test_tile_extract_2d", test_tile_extract(tile_extract_2d_kernel, 2), devices=devices)

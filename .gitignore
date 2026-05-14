@@ -27,6 +27,7 @@ warp_lang.egg-info
 CLAUDE.local.md
 .claude/settings.local.json
 .claude/worktrees/
+/docs/superpowers/
 
 # Development and testing
 *.o
@@ -34,6 +35,7 @@ CLAUDE.local.md
 *.dll
 *.lib
 *.cpp.obj
+*.cpp.warp*.obj
 *.pdb
 *.log
 *.bak

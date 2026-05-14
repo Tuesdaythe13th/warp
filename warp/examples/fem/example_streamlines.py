@@ -10,6 +10,8 @@
 #
 ###########################################################################
 
+import warnings
+
 import numpy as np
 
 import warp as wp
@@ -213,7 +215,7 @@ class Example:
                     draw_axis=False,
                 )
             except Exception as err:
-                wp.utils.warn(f"Could not initialize OpenGL renderer: {err}")
+                warnings.warn(f"Could not initialize OpenGL renderer: {err}", stacklevel=2)
                 pass
 
     def step(self):

@@ -6,6 +6,7 @@ import gc
 import os
 import sys
 import time
+import warnings
 from typing import Any
 
 import numpy as np
@@ -715,7 +716,7 @@ class Plot:
             try:
                 return self._plot_matplotlib(options, save=save)
             except ModuleNotFoundError:
-                wp.utils.warn("pyvista or matplotlib must be installed to visualize solution results")
+                warnings.warn("pyvista or matplotlib must be installed to visualize solution results", stacklevel=2)
 
     def _plot_pyvista(self, options: dict[str, Any], save: str | None = None):
         import pyvista  # noqa: PLC0415

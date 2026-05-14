@@ -8,6 +8,7 @@
 # grid and the PicQuadrature class.
 ###########################################################################
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -237,7 +238,7 @@ class Example:
                     screen_height=1024,
                 )
         except Exception as err:
-            wp.utils.warn(f"Could not initialize OpenGL renderer: {err}.")
+            warnings.warn(f"Could not initialize OpenGL renderer: {err}.", stacklevel=2)
 
         try:
             if stage_path:
@@ -347,7 +348,7 @@ class Example:
                 inv_volume,
                 pressure_field.dof_values,
                 velocity_field.dof_values,
-                quiet=not wp.config.verbose,
+                quiet=wp.config.log_level > wp.LOG_DEBUG,
             )
 
             # (A)PIC advection

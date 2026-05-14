@@ -150,8 +150,9 @@ Building from Source
 
 For developers who want to build the library themselves the following tools are required:
 
-* Microsoft Visual Studio (Windows), minimum version 2019
-* GCC (Linux), minimum version 9.4
+* (Windows) Microsoft Visual Studio, minimum version 2019
+* (Linux) GCC, minimum version 9.4
+* (Linux) Python development headers, e.g. ``libpython3-dev`` (v3.10+)
 * `CUDA Toolkit <https://developer.nvidia.com/cuda-toolkit>`_, minimum version 12.0
 * `Git Large File Storage <https://git-lfs.com>`_
 
@@ -165,7 +166,19 @@ Upon success, the script will output platform-specific binary files in ``warp/bi
 The build script will look for the CUDA Toolkit in its default installation path.
 This path can be overridden by setting the ``CUDA_PATH`` environment variable. Alternatively,
 the path to the CUDA Toolkit can be passed to the build command as
-``--cuda-path="..."``. After building, the Warp package should be installed using:
+``--cuda-path="..."``.
+
+By default, CUDA libraries (cudart, NVRTC, nvJitLink, MathDx) are linked statically
+to produce self-contained binaries. To link against shared CUDA libraries instead,
+pass ``--use-dynamic-cuda``:
+
+.. code-block:: console
+
+    $ python build_lib.py --use-dynamic-cuda
+
+The corresponding shared libraries must be available at runtime when using this option.
+
+After building, the Warp package should be installed using:
 
 .. code-block:: console
 

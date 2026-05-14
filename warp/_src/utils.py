@@ -6,12 +6,10 @@ from __future__ import annotations
 import cProfile
 import ctypes
 import gc
-import linecache
 import os
 import sys
 import threading
 import time
-import warnings
 from collections.abc import Callable
 from types import ModuleType
 from typing import Any
@@ -21,56 +19,15 @@ import numpy as np
 import warp as wp
 import warp._src.context
 import warp._src.types
-from warp._src.context import DeviceLike
+from warp._src import logger as _logger_module
+from warp._src.context import Allocator, CaptureMode, DeviceLike, _validate_allocator
+from warp._src.logger import Logger, LoggerBasic, _validate_logger, get_logger, log_debug, set_logger
 from warp._src.types import Array, DType, type_repr, types_equal
 
 _wp_module_name_ = "warp.utils"
 
-warnings_seen = set()
-
 # Cache for wp.map(): (func_name, input_descriptors, output_type_descriptor) -> (out_dtypes, kernel)
 map_cache: dict[tuple, tuple] = {}
-
-
-def warp_showwarning(message, category, filename, lineno, file=None, line=None):
-    """Version of warnings.showwarning that always prints to sys.stdout."""
-
-    if warp.config.verbose_warnings:
-        s = f"Warp {category.__name__}: {message} ({filename}:{lineno})\n"
-
-        if line is None:
-            try:
-                line = linecache.getline(filename, lineno)
-            except Exception:
-                # When a warning is logged during Python shutdown, linecache
-                # and the import machinery don't work anymore
-                line = None
-
-        if line:
-            line = line.strip()
-            s += f"  {line}\n"
-    else:
-        # simple warning
-        s = f"Warp {category.__name__}: {message}\n"
-
-    sys.stdout.write(s)
-
-
-def warn(message, category=None, stacklevel=1, once=False):
-    if (category, message) in warnings_seen:
-        return
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("default")  # Change the filter in this process
-        warnings.showwarning = warp_showwarning
-        warnings.warn(
-            message,
-            category,
-            stacklevel=stacklevel + 1,  # Increment stacklevel by 1 since we are in a wrapper
-        )
-
-    if category is DeprecationWarning or once:
-        warnings_seen.add((category, message))
 
 
 # expand a 7-vec to a tuple of arrays
@@ -1433,9 +1390,8 @@ class ScopedTimer:
             if self.print:
                 ScopedTimer._thread_local.indent += 1
 
-                if warp.config.verbose:
-                    indent = "    " * ScopedTimer._thread_local.indent
-                    print(f"{indent}{self.name} ...", flush=True)
+                indent = "    " * ScopedTimer._thread_local.indent
+                log_debug(f"{indent}{self.name} ...")
 
             self.start = time.perf_counter_ns()
 
@@ -1473,12 +1429,17 @@ class ScopedTimer:
 
                 if self.timing_results:
                     self.report_func(self.timing_results, indent=indent)
-                    print()
 
+                # Route the timer's final output through the active logger so
+                # that custom loggers capture it.  Callers
+                # pass ``active=`` to gate by log_level themselves; bypass the
+                # log_level threshold here so an explicitly enabled timer
+                # always emits.
+                logger = get_logger()
                 if self.extra_msg:
-                    print(f"{indent}{self.name} took {self.elapsed:.2f} ms {self.extra_msg}")
+                    logger.info(f"{indent}{self.name} took {self.elapsed:.2f} ms {self.extra_msg}")
                 else:
-                    print(f"{indent}{self.name} took {self.elapsed:.2f} ms")
+                    logger.info(f"{indent}{self.name} took {self.elapsed:.2f} ms")
 
                 ScopedTimer._thread_local.indent -= 1
 
@@ -1514,6 +1475,109 @@ class ScopedMempool:
 
     def __exit__(self, exc_type, exc_value, traceback):
         wp.set_mempool_enabled(self.device, self.saved_setting)
+
+
+class ScopedAllocator:
+    """Context manager to temporarily use a custom allocator on a device.
+
+    On context exit, the previous allocator setting is restored.
+
+    Args:
+        device: The CUDA device on which to set the allocator.
+        allocator: The allocator to use, or ``None`` to restore the built-in allocator.
+
+    Example:
+        .. code-block:: python
+
+            with wp.ScopedAllocator(device, my_allocator):
+                arr = wp.zeros(1000, dtype=wp.float32, device=device)
+
+    See Also:
+        :func:`set_cuda_allocator`, :func:`set_device_allocator`, :func:`get_device_allocator`
+    """
+
+    def __init__(self, device: DeviceLike, allocator: Allocator | None):
+        self.device = wp.get_device(device)
+        if not self.device.is_cuda:
+            raise RuntimeError("Custom allocators are only supported on CUDA devices")
+        _validate_allocator(allocator)
+        self.allocator = allocator
+
+    def __enter__(self):
+        self.saved = self.device._custom_allocator
+        self.device._custom_allocator = self.allocator
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.device._custom_allocator = self.saved
+
+
+class ScopedLogger:
+    """Context manager to temporarily install a custom logger.
+
+    On context exit, the previous logger is restored.
+
+    Args:
+        logger: A :class:`~warp.Logger`-compatible object, or ``None`` to
+            temporarily restore Warp's built-in default logger.
+
+    Example:
+        .. code-block:: python
+
+            with wp.ScopedLogger(my_capture_logger):
+                wp.launch(...)  # diagnostics flow to my_capture_logger
+
+    See Also:
+        :func:`warp.set_logger`, :func:`warp.get_logger`
+    """
+
+    def __init__(self, logger: Logger | None):
+        if logger is not None:
+            _validate_logger(logger)
+        self.logger = logger
+
+    def __enter__(self):
+        self.saved = get_logger()
+        set_logger(self.logger if self.logger is not None else LoggerBasic())
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        # Restore by direct assignment rather than set_logger() to avoid
+        # re-validating the saved logger; a TypeError raised here would mask
+        # any in-flight exception propagating through the context.
+        _logger_module._active_logger = self.saved
+
+
+class ScopedLogLevel:
+    """Context manager to temporarily override :data:`warp.config.log_level`.
+
+    On context exit, the previous value is restored.
+
+    Args:
+        log_level: The log level to set inside the scope. Use one of
+            :data:`~warp.LOG_DEBUG`, :data:`~warp.LOG_INFO`,
+            :data:`~warp.LOG_WARNING`, or :data:`~warp.LOG_ERROR`.
+
+    Example:
+        .. code-block:: python
+
+            with wp.ScopedLogLevel(wp.LOG_WARNING):
+                wp.init()  # banner suppressed inside the scope
+
+    See Also:
+        :data:`warp.config.log_level`
+    """
+
+    def __init__(self, log_level: int):
+        self.log_level = log_level
+
+    def __enter__(self):
+        self.saved = wp.config.log_level
+        wp.config.log_level = self.log_level
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        wp.config.log_level = self.saved
 
 
 # Allow temporarily enabling/disabling mempool access
@@ -1585,20 +1649,29 @@ class ScopedPeerAccess:
 
 
 class ScopedCapture:
-    """Context manager to capture a sequence of operations into a CUDA graph.
+    """Context manager to capture a sequence of operations into a graph.
 
-    CUDA graphs allow a sequence of GPU operations to be captured and replayed
-    with reduced launch overhead. The captured graph is available as the ``graph``
-    attribute after exiting the context.
+    Captures kernel launches, memory copies, and memsets for later replay
+    with reduced launch overhead. Works on both CPU and CUDA devices. The
+    captured graph is available as the ``graph`` attribute after exiting
+    the context.
 
     Args:
-        device: Device on which to capture operations.
-        stream: Stream on which to capture operations.
+        device: Device on which to capture operations (CPU or CUDA).
+        stream: Stream on which to capture operations (CUDA only).
         force_module_load: If ``True``, force all modules to load before capture begins.
         external: If ``True``, indicates an external graph capture is already active.
+            The ``capture_mode`` argument should specify the mode that was used to
+            initiate the external capture.
+        apic: If ``True``, enable APIC recording for serialization via
+            :func:`capture_save`. On CPU, recording always occurs regardless
+            of this flag (needed for CPU graph replay). Default is ``False``.
+        capture_mode: The :class:`~warp.CaptureMode` to use when opening
+            the capture. Defaults to :attr:`CaptureMode.THREAD_LOCAL`.
+            See :func:`capture_begin` for details.
 
     Attributes:
-        graph: The captured CUDA graph, available after context exit.
+        graph: The captured graph, available after context exit.
         active: Whether capture is currently in progress.
 
     Example:
@@ -1614,18 +1687,33 @@ class ScopedCapture:
         :func:`capture_begin`, :func:`capture_end`, :func:`capture_launch`
     """
 
-    def __init__(self, device: DeviceLike = None, stream=None, force_module_load=None, external=False):
+    def __init__(
+        self,
+        device: DeviceLike = None,
+        stream=None,
+        force_module_load=None,
+        external=False,
+        apic: bool = False,
+        capture_mode: CaptureMode = CaptureMode.THREAD_LOCAL,
+    ):
         self.device = device
         self.stream = stream
         self.force_module_load = force_module_load
         self.external = external
+        self.apic = apic
+        self.capture_mode = capture_mode
         self.active = False
         self.graph = None
 
     def __enter__(self):
         try:
             wp.capture_begin(
-                device=self.device, stream=self.stream, force_module_load=self.force_module_load, external=self.external
+                device=self.device,
+                stream=self.stream,
+                force_module_load=self.force_module_load,
+                external=self.external,
+                apic=self.apic,
+                capture_mode=self.capture_mode,
             )
             self.active = True
             return self
@@ -1835,6 +1923,10 @@ class ScopedMemoryTracker:
     ``(native:bvh)``), while Python allocations include the call-site
     file, line, and function name.
 
+    Scope stacks are thread-local, while allocation totals and reports are
+    global.  When tracking allocations from worker threads, prefer enabling
+    tracking before starting the workers.
+
     Args:
         name: Scope name for grouping allocations.  Nested trackers form a
             hierarchical scope path, e.g. ``"simulation/collision"``.
@@ -1876,6 +1968,7 @@ class ScopedMemoryTracker:
         if not self.active:
             return self
 
+        wp.init()
         from warp._src.context import runtime  # noqa: PLC0415
 
         runtime.core.wp_alloc_tracker_push_scope(self.name.encode())
@@ -1902,10 +1995,8 @@ class ScopedMemoryTracker:
         """Print an allocation report.
 
         Can be called multiple times -- each call reflects the current state.
-
-        .. note::
-
-            Not safe to call concurrently from multiple threads.
+        Concurrent calls produce serialized snapshots of the global tracker
+        state.
 
         Args:
             file: File object to write to (defaults to ``sys.stdout``).
@@ -1920,16 +2011,13 @@ class ScopedMemoryTracker:
         if sort not in ("size", "chronological"):
             raise ValueError(f"Invalid sort order {sort!r}; expected 'size' or 'chronological'")
 
-        from warp._src.context import runtime  # noqa: PLC0415
-
         sort_order = 1 if sort == "chronological" else 0
-        text = runtime.core.wp_alloc_tracker_report(sort_order, max_items)
+        text = warp._src.context.alloc_tracker_report_text(sort_order, max_items)
         if text:
-            decoded = text.decode("utf-8")
             if self.report_func is not None:
-                self.report_func(decoded)
+                self.report_func(text)
             else:
-                print(decoded, file=file or sys.stdout, end="")
+                print(text, file=file or sys.stdout, end="")
 
     def clear(self):
         """Reset all tracking data while keeping the tracker active.
@@ -1940,93 +2028,3 @@ class ScopedMemoryTracker:
         from warp._src.context import runtime  # noqa: PLC0415
 
         runtime.core.wp_alloc_tracker_reset()
-
-
-_importing_deprecated_namespace = False
-
-
-def warn_deprecated_namespace(module_name):
-    if _importing_deprecated_namespace:
-        return
-    warn(
-        f"The namespace `warp.{'.'.join(module_name.split('.')[1:])}` will soon be removed from the public API. "
-        f"It can still be accessed from `warp._src.{'.'.join(module_name.split('.')[1:])}` but might be changed or removed without notice.",
-        DeprecationWarning,
-    )
-
-
-def get_deprecated_method(cls, cls_path, attr_name):
-    if hasattr(cls, f"_{attr_name}"):
-        warn(
-            f"The class method `{cls_path}.{attr_name}` will soon be removed from the public API. "
-            f"It can still be accessed from `{cls_path}._{attr_name}` but might be changed or removed without notice.",
-            DeprecationWarning,
-        )
-
-        return getattr(cls, f"_{attr_name}")
-
-    raise AttributeError(f"'{cls_path}' has no attribute '{attr_name}'")
-
-
-def get_deprecated_api(module, namespace, attr_name, old_attr_path=None):
-    """
-    Get a deprecated API symbol and issue a deprecation warning.
-
-    Args:
-        module: The module containing the symbol
-        namespace: The namespace prefix (e.g., "warp")
-        attr_name: The name of the attribute to retrieve
-        old_attr_path: Optional path for the old symbol location (for renames)
-    """
-    import sys  # noqa: PLC0415
-
-    # Resolve the attribute first. If it doesn't exist in the underlying module,
-    # raise AttributeError immediately without warning. This prevents spurious
-    # deprecation warnings from introspection tools (pickle, hasattr, etc.) that
-    # probe for attributes that were never part of the API. For example, pickle's
-    # whichmodule() iterates sys.modules calling getattr(module, name) on each one,
-    # and its C implementation only catches AttributeError -- any other exception
-    # (e.g., from a warning handler) crashes the caller.
-    try:
-        value = getattr(module, attr_name)
-    except AttributeError:
-        module_name = module.__name__.split(".")[-1]
-        raise AttributeError(f"module '{namespace}.{module_name}' has no attribute '{attr_name}'") from None
-
-    # Suppress warnings for internal Warp introspection (e.g., codegen's hasattr/getattr checks).
-    # Check if caller (frame 2) is from warp/_src/ and return silently if so.
-    # Only catch ValueError (frame unavailable), not AttributeError (missing attribute must propagate).
-    try:
-        frame = sys._getframe(2)  # Get __getattr__'s immediate caller
-        if "/warp/_src/" in frame.f_code.co_filename or "\\warp\\_src\\" in frame.f_code.co_filename:
-            return value
-    except ValueError:
-        pass  # Frame unavailable, proceed with normal warning
-
-    if not attr_name.startswith("_"):
-        module_name = module.__name__.split(".")[-1]
-        attr_path = f"{namespace}.{module_name}.{attr_name}"
-
-        # Check if symbol exists directly in the namespace (e.g., promoted to warp.Module instead of warp.context.Module)
-        # Use __dict__ check to avoid triggering __getattr__ which could cause recursion
-        namespace_module = sys.modules.get(namespace)
-        if namespace_module is not None and attr_name in getattr(namespace_module, "__dict__", {}):
-            # Symbol has been promoted to the main namespace
-            public_path = f"{namespace}.{attr_name}"
-            warn(
-                f"The symbol `{attr_path}` will soon be removed from the public API. Use `{public_path}` instead.",
-                DeprecationWarning,
-            )
-        elif old_attr_path is None:
-            warn(
-                f"The symbol `{attr_path}` will soon be removed from the public API. "
-                f"It can still be accessed from `{module.__name__}.{attr_name}` but might be changed or removed without notice.",
-                DeprecationWarning,
-            )
-        else:
-            warn(
-                f"The symbol `{old_attr_path}` will soon be removed from the public API. Use `{attr_path}` instead.",
-                DeprecationWarning,
-            )
-
-    return value
