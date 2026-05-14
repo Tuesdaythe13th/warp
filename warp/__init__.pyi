@@ -174,9 +174,10 @@ from warp._src.context import get_device_allocator as get_device_allocator
 from warp._src.context import set_cuda_allocator as set_cuda_allocator
 from warp._src.context import set_device_allocator as set_device_allocator
 from warp._src.utils import ScopedAllocator as ScopedAllocator
-from warp._src.rmm_allocator import RmmAllocator as RmmAllocator
+from warp._src.context import CaptureMode as CaptureMode
 from warp._src.utils import ScopedCapture as ScopedCapture
 from warp._src.context import is_conditional_graph_supported as is_conditional_graph_supported
+from warp._src.context import Graph as Graph
 from warp._src.context import capture_begin as capture_begin
 from warp._src.context import capture_end as capture_end
 from warp._src.context import capture_launch as capture_launch
@@ -200,6 +201,15 @@ from warp._src.utils import TIMING_MEMCPY as TIMING_MEMCPY
 from warp._src.utils import TIMING_MEMSET as TIMING_MEMSET
 from warp._src.utils import TIMING_GRAPH as TIMING_GRAPH
 from warp._src.utils import TIMING_ALL as TIMING_ALL
+from warp._src.logger import LOG_DEBUG as LOG_DEBUG
+from warp._src.logger import LOG_INFO as LOG_INFO
+from warp._src.logger import LOG_WARNING as LOG_WARNING
+from warp._src.logger import LOG_ERROR as LOG_ERROR
+from warp._src.logger import Logger as Logger
+from warp._src.logger import set_logger as set_logger
+from warp._src.logger import get_logger as get_logger
+from warp._src.utils import ScopedLogger as ScopedLogger
+from warp._src.utils import ScopedLogLevel as ScopedLogLevel
 from warp._src.types import dtype_from_numpy as dtype_from_numpy
 from warp._src.types import dtype_to_numpy as dtype_to_numpy
 from warp._src.context import from_numpy as from_numpy
@@ -1805,6 +1815,15 @@ def sign(x: Scalar) -> Scalar:
         -1 if ``x`` < 0 and 1 otherwise."""
     ...
 
+def copysign(x: Float, y: Float) -> Float:
+    """Return a value with the magnitude of ``x`` and the sign of ``y``.
+
+    For example, ``wp.copysign(3.0, -1.0)`` returns ``-3.0`` and
+    ``wp.copysign(-3.0, 1.0)`` returns ``3.0``. Useful for forcing a
+    specific sign on a result whose signed-zero behavior is otherwise
+    implementation-defined (e.g. ``wp.min(-0.0, +0.0)``)."""
+    ...
+
 def step(x: Scalar) -> Scalar:
     """Compute 1.0 if ``x`` < 0.0, otherwise 0.0."""
     ...
@@ -3378,7 +3397,7 @@ def tile_scatter_add(a: Tile[Any, tuple[int, ...]], i: int32, value: Any, has_va
         .. code-block:: python
 
             @wp.kernel
-            def histogram(data: wp.array(dtype=float), out: wp.array(dtype=float)):
+            def histogram(data: wp.array[float], out: wp.array[float]):
 
                 bins = wp.tile_zeros(dtype=float, shape=4, storage="shared")
                 i = wp.tid()
@@ -3596,13 +3615,17 @@ def tile_sum(a: Tile[Any, tuple[int, ...]]) -> Tile[Any, tuple[Literal[1]]]:
 def tile_dot(a: Tile[Any, tuple[int, ...]], b: Tile[Any, tuple[int, ...]]) -> Tile[Any, tuple[Literal[1]]]:
     """Compute the dot product of two tiles.
 
-    Computes a full contraction (tensordot) between corresponding elements
-    and sums the results. For scalar tiles this is the standard dot product;
-    for vector or matrix tiles each element pair is fully contracted
-    (e.g., ``wp.dot(a[i], b[i])`` for ``vec3`` elements).
+    Computes a full contraction between corresponding elements and sums
+    the results. For scalar tiles this is the standard dot product; for
+    vector tiles each pair is contracted via ``wp.dot``; for matrix tiles
+    it is the Frobenius inner product (the sum of element-wise products
+    over all axes).
 
-    Equivalent to ``wp.tile_sum(wp.tile_map(wp.tensordot, a, b))``
-    but without any intermediate tiles or shared-memory round trips.
+    Equivalent in Python to ``wp.tile_sum(a * b)`` for scalar tiles,
+    ``wp.tile_sum(wp.tile_map(wp.dot, a, b))`` for vector tiles, and
+    ``wp.tile_sum(wp.tile_map(wp.ddot, a, b))`` for matrix tiles, but
+    without the intermediate tile and shared-memory round trip the
+    explicit forms would require.
 
     Args:
         a: First tile operand.
@@ -4316,7 +4339,7 @@ def tile_stack(capacity: int32, dtype: Any) -> TileStack[Any, Any]:
             CAP = wp.constant(8)
 
             @wp.kernel
-            def compact_kernel(data: wp.array(dtype=int), out: wp.array(dtype=int), out_count: wp.array(dtype=int)):
+            def compact_kernel(data: wp.array[int], out: wp.array[int], out_count: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
 
@@ -4365,7 +4388,7 @@ def tile_stack_push(s: Any, value: Any, has_value: bool) -> int:
             CAP = wp.constant(8)
 
             @wp.kernel
-            def push_kernel(out_idx: wp.array(dtype=int)):
+            def push_kernel(out_idx: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
                 idx = wp.tile_stack_push(s, j * 10, j < 4)
@@ -4408,7 +4431,7 @@ def tile_stack_pop(s: Any) -> tuple[Any, int]:
             CAP = wp.constant(8)
 
             @wp.kernel
-            def pop_kernel(out: wp.array(dtype=int)):
+            def pop_kernel(out: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
                 wp.tile_stack_push(s, j * 10, j < 4)
@@ -4443,7 +4466,7 @@ def tile_stack_clear(s: Any) -> None:
             CAP = wp.constant(8)
 
             @wp.kernel
-            def clear_kernel(before: wp.array(dtype=int), after: wp.array(dtype=int)):
+            def clear_kernel(before: wp.array[int], after: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
                 wp.tile_stack_push(s, j, True)
@@ -4489,7 +4512,7 @@ def tile_stack_count(s: Any) -> int:
             CAP = wp.constant(8)
 
             @wp.kernel
-            def count_kernel(out_count: wp.array(dtype=int)):
+            def count_kernel(out_count: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
                 wp.tile_stack_push(s, j, j % 2 == 0)

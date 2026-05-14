@@ -12,6 +12,7 @@ from typing import Any
 import warp._src.build
 import warp._src.context
 from warp._src.codegen import Reference, Var, get_arg_value, strip_reference
+from warp._src.logger import log_warning
 from warp._src.types import *
 
 from .context import add_builtin
@@ -120,6 +121,19 @@ add_builtin(
         -1 if ``x`` < 0 and 1 otherwise.""",
     group="Scalar Math",
     is_differentiable=False,
+)
+
+add_builtin(
+    "copysign",
+    input_types={"x": Float, "y": Float},
+    value_func=sametypes_create_value_func(Float),
+    doc="""Return a value with the magnitude of ``x`` and the sign of ``y``.
+
+    For example, ``wp.copysign(3.0, -1.0)`` returns ``-3.0`` and
+    ``wp.copysign(-3.0, 1.0)`` returns ``3.0``. Useful for forcing a
+    specific sign on a result whose signed-zero behavior is otherwise
+    implementation-defined (e.g. ``wp.min(-0.0, +0.0)``).""",
+    group="Scalar Math",
 )
 
 add_builtin(
@@ -3134,16 +3148,12 @@ def tile_load_tuple_value_func(arg_types: Mapping[str, type], arg_values: Mappin
 
     if arg_values.get("aligned"):
         if arg_values["storage"] == "register":
-            from warp._src.utils import warn  # noqa: PLC0415
-
-            warn(
+            log_warning(
                 "tile_load() with aligned=True has no effect for storage='register'. "
                 "The aligned parameter only affects shared memory tiles."
             )
         elif arg_values["storage"] == "shared" and len(shape) < 2:
-            from warp._src.utils import warn  # noqa: PLC0415
-
-            warn(
+            log_warning(
                 "tile_load() with aligned=True has no effect for 1D shared tiles. "
                 "The vectorized path requires 2D+ tiles."
             )
@@ -3413,16 +3423,12 @@ def tile_store_value_func(arg_types, arg_values):
 
     if arg_values.get("aligned"):
         if t.storage == "register":
-            from warp._src.utils import warn  # noqa: PLC0415
-
-            warn(
+            log_warning(
                 "tile_store() with aligned=True has no effect for register tiles. "
                 "The aligned parameter only affects shared memory tiles."
             )
         elif t.storage == "shared" and len(t.shape) < 2:
-            from warp._src.utils import warn  # noqa: PLC0415
-
-            warn(
+            log_warning(
                 "tile_store() with aligned=True has no effect for 1D shared tiles. "
                 "The vectorized path requires 2D+ tiles."
             )
@@ -4758,7 +4764,7 @@ add_builtin(
         .. code-block:: python
 
             @wp.kernel
-            def histogram(data: wp.array(dtype=float), out: wp.array(dtype=float)):
+            def histogram(data: wp.array[float], out: wp.array[float]):
 
                 bins = wp.tile_zeros(dtype=float, shape=4, storage="shared")
                 i = wp.tid()
@@ -5337,13 +5343,17 @@ add_builtin(
     value_func=tile_dot_value_func,
     doc="""Compute the dot product of two tiles.
 
-    Computes a full contraction (tensordot) between corresponding elements
-    and sums the results. For scalar tiles this is the standard dot product;
-    for vector or matrix tiles each element pair is fully contracted
-    (e.g., ``wp.dot(a[i], b[i])`` for ``vec3`` elements).
+    Computes a full contraction between corresponding elements and sums
+    the results. For scalar tiles this is the standard dot product; for
+    vector tiles each pair is contracted via ``wp.dot``; for matrix tiles
+    it is the Frobenius inner product (the sum of element-wise products
+    over all axes).
 
-    Equivalent to ``wp.tile_sum(wp.tile_map(wp.tensordot, a, b))``
-    but without any intermediate tiles or shared-memory round trips.
+    Equivalent in Python to ``wp.tile_sum(a * b)`` for scalar tiles,
+    ``wp.tile_sum(wp.tile_map(wp.dot, a, b))`` for vector tiles, and
+    ``wp.tile_sum(wp.tile_map(wp.ddot, a, b))`` for matrix tiles, but
+    without the intermediate tile and shared-memory round trip the
+    explicit forms would require.
 
     Args:
         a: First tile operand.
@@ -7018,7 +7028,7 @@ add_builtin(
             CAP = wp.constant(8)
 
             @wp.kernel
-            def compact_kernel(data: wp.array(dtype=int), out: wp.array(dtype=int), out_count: wp.array(dtype=int)):
+            def compact_kernel(data: wp.array[int], out: wp.array[int], out_count: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
 
@@ -7098,7 +7108,7 @@ add_builtin(
             CAP = wp.constant(8)
 
             @wp.kernel
-            def push_kernel(out_idx: wp.array(dtype=int)):
+            def push_kernel(out_idx: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
                 idx = wp.tile_stack_push(s, j * 10, j < 4)
@@ -7166,7 +7176,7 @@ add_builtin(
             CAP = wp.constant(8)
 
             @wp.kernel
-            def pop_kernel(out: wp.array(dtype=int)):
+            def pop_kernel(out: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
                 wp.tile_stack_push(s, j * 10, j < 4)
@@ -7226,7 +7236,7 @@ add_builtin(
             CAP = wp.constant(8)
 
             @wp.kernel
-            def clear_kernel(before: wp.array(dtype=int), after: wp.array(dtype=int)):
+            def clear_kernel(before: wp.array[int], after: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
                 wp.tile_stack_push(s, j, True)
@@ -7297,7 +7307,7 @@ add_builtin(
             CAP = wp.constant(8)
 
             @wp.kernel
-            def count_kernel(out_count: wp.array(dtype=int)):
+            def count_kernel(out_count: wp.array[int]):
                 _i, j = wp.tid()
                 s = wp.tile_stack(capacity=CAP, dtype=int)
                 wp.tile_stack_push(s, j, j % 2 == 0)
@@ -9187,7 +9197,6 @@ add_builtin(
     doc="""Divergence-free vector field based on Perlin noise.
 
     Use the gradient of a Perlin noise function.""",
-    is_differentiable=False,
 )
 add_builtin(
     "curlnoise",
@@ -9198,7 +9207,6 @@ add_builtin(
     doc="""Divergence-free vector field based on Perlin noise.
 
     Use the curl of three Perlin noise functions.""",
-    is_differentiable=False,
 )
 add_builtin(
     "curlnoise",
@@ -9209,7 +9217,6 @@ add_builtin(
     doc="""Divergence-free vector field based on Perlin noise.
 
     Use the curl of three Perlin noise functions.""",
-    is_differentiable=False,
 )
 
 
@@ -12887,6 +12894,25 @@ def tile_matmul_lto_dispatch_func(
             "tile_matmul() arguments must be tiles of float16, bfloat16, float32 or float64, vec2h, vec2f, vec2d entries"
         )
 
+    # Reject bfloat16 as the accumulator precision uniformly across all backends. cuBLASDx
+    # disallows bf16 accumulators (a static_assert since cuBLASDx 0.6.0), and the scalar
+    # matmul fallback was silently lossy for the same reason. The K-loop reduction precision
+    # is derived from 'out's dtype regardless of which calling form is used. If backward is
+    # enabled, 'a' and 'b' are also accumulators (for adjA, adjB).
+    if out.type.dtype == bfloat16:
+        raise TypeError(
+            "tile_matmul() does not support a bfloat16 'out' tile. "
+            "Allowed 'out' dtypes are float16, float32, and float64."
+        )
+    if options["enable_backward"] and (a.type.dtype == bfloat16 or b.type.dtype == bfloat16):
+        raise TypeError(
+            "tile_matmul() does not support bfloat16 'a' or 'b' tiles when the backward pass is enabled. "
+            "Allowed accumulator dtypes are float16, float32, and float64 (the backward pass uses 'a' "
+            "and 'b' as accumulators for adjA and adjB). If gradients are not needed, set "
+            "`enable_backward=False` on the kernel's module, e.g. "
+            "`wp.set_module_options({'enable_backward': False})`."
+        )
+
     if (
         (a.type.shape[1] != b.type.shape[0])
         or (a.type.shape[0] != out.type.shape[0])
@@ -13324,8 +13350,13 @@ def _tile_cholesky_generic_lto_dispatch_func(
 
     arch = options["output_arch"]
 
-    if arch is None or not warp._src.context.runtime.core.wp_is_mathdx_enabled():
-        # CPU/no-MathDx dispatch
+    if (
+        arch is None
+        or not warp._src.context.runtime.core.wp_is_mathdx_enabled()
+        or not options.get("enable_mathdx_solver", True)
+    ):
+        # CPU/no-MathDx/disabled dispatch -- falls into the cooperative scalar
+        # branch via wp_is_null_func<Fwd>.
         if inplace:
             return ((0, a), [upper], [], 0)
         return ((0, 0, 0, a, out), [upper], [], 0)
@@ -13601,8 +13632,13 @@ def _tile_cholesky_solve_generic_lto_dispatch_func(
 
     arch = options["output_arch"]
 
-    if arch is None or not warp._src.context.runtime.core.wp_is_mathdx_enabled():
-        # CPU/no-MathDx dispatch
+    if (
+        arch is None
+        or not warp._src.context.runtime.core.wp_is_mathdx_enabled()
+        or not options.get("enable_mathdx_solver", True)
+    ):
+        # CPU/no-MathDx/disabled dispatch -- falls into the cooperative scalar
+        # branch via wp_is_null_func<Fwd>.
         return ((0, L, y) if inplace else (0, L, y, x), [upper], [], 0)
     else:
         NRHS = y.type.shape[1] if len(y.type.shape) > 1 else 1
@@ -13811,8 +13847,13 @@ def _tile_lower_solve_generic_lto_dispatch_func(
 
     arch = options["output_arch"]
 
-    if arch is None or not warp._src.context.runtime.core.wp_is_mathdx_enabled():
-        # CPU/no-MathDx dispatch
+    if (
+        arch is None
+        or not warp._src.context.runtime.core.wp_is_mathdx_enabled()
+        or not options.get("enable_mathdx_solver", True)
+    ):
+        # CPU/no-MathDx/disabled dispatch -- falls into the cooperative scalar
+        # branch via wp_is_null_func<Fwd>.
         return ((0, L, y) if inplace else (0, L, y, z), [], [], 0)
     else:
         NRHS = y.type.shape[1] if len(y.type.shape) > 1 else 1
@@ -14006,8 +14047,13 @@ def _tile_upper_solve_generic_lto_dispatch_func(
 
     arch = options["output_arch"]
 
-    if arch is None or not warp._src.context.runtime.core.wp_is_mathdx_enabled():
-        # CPU/no-MathDx dispatch
+    if (
+        arch is None
+        or not warp._src.context.runtime.core.wp_is_mathdx_enabled()
+        or not options.get("enable_mathdx_solver", True)
+    ):
+        # CPU/no-MathDx/disabled dispatch -- falls into the cooperative scalar
+        # branch via wp_is_null_func<Fwd>.
         return ((0, U, z) if inplace else (0, U, z, x), [], [], 0)
     else:
         NRHS = z.type.shape[1] if len(z.type.shape) > 1 else 1

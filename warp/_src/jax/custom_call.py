@@ -7,10 +7,10 @@ from functools import reduce
 import warp as wp
 from warp._src.context import type_str
 from warp._src.jax import get_jax_device
+from warp._src.logger import log_warning
 from warp._src.types import array_t, launch_bounds_t, matches_array_class, strides_from_shape
-from warp._src.utils import warn
 
-_wp_module_name_ = "warp.jax_experimental.custom_call"
+_wp_module_name_ = "warp.jax.custom_call"
 
 _jax_warp_p = None
 
@@ -25,11 +25,11 @@ def jax_kernel(kernel, launch_dims=None, quiet=False):
 
     .. deprecated:: 1.10.0
         This version of ``jax_kernel()`` is deprecated for JAX >= 0.5.0 and is not supported
-        with JAX >= 0.8.0. Use :func:`warp.jax_experimental.ffi.jax_kernel` instead, which
+        with JAX >= 0.8.0. Use :func:`warp.jax.ffi.jax_kernel` instead, which
         is the default implementation as of Warp 1.10.
 
     This implementation requires JAX version 0.4.25 - 0.7.x. For JAX 0.8.0 and later,
-    use the FFI-based implementation at :func:`warp.jax_experimental.ffi.jax_kernel`.
+    use the FFI-based implementation at :func:`warp.jax.ffi.jax_kernel`.
 
     Args:
         kernel: The Warp kernel to be wrapped.
@@ -56,14 +56,14 @@ def jax_kernel(kernel, launch_dims=None, quiet=False):
             f"but installed JAX version is {jax.__version_info__}."
         )
         if jax.__version_info__ >= (0, 8, 0):
-            msg += " Please use warp.jax_experimental.ffi.jax_kernel instead."
+            msg += " Please use warp.jax.ffi.jax_kernel instead."
         raise RuntimeError(msg)
 
     # deprecation warning
     if jax.__version_info__ >= (0, 5, 0) and not quiet:
-        warn(
+        log_warning(
             "This version of jax_kernel() is deprecated and will not be supported with newer JAX versions. "
-            "Please use the newer FFI version instead (warp.jax_experimental.ffi.jax_kernel). "
+            "Please use the newer FFI version instead (warp.jax.ffi.jax_kernel). "
             "As of Warp release 1.10, the FFI version is the default implementation of jax_kernel(). "
             "Pass quiet=True to disable this warning.",
             DeprecationWarning,
@@ -211,6 +211,7 @@ def _create_jax_warp_primitive():
     def base_type_to_jax_ir(warp_dtype):
         warp_to_jax_dict = {
             wp.float16: ir.F16Type.get(),
+            wp.bfloat16: ir.BF16Type.get(),
             wp.float32: ir.F32Type.get(),
             wp.float64: ir.F64Type.get(),
             wp.int8: ir.IntegerType.get_signless(8),
@@ -232,6 +233,7 @@ def _create_jax_warp_primitive():
     def base_type_is_compatible(warp_type, jax_ir_type):
         jax_ir_to_warp = {
             "f16": wp.float16,
+            "bf16": wp.bfloat16,
             "f32": wp.float32,
             "f64": wp.float64,
             "i8": wp.int8,

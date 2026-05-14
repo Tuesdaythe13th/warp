@@ -17,6 +17,7 @@ import warp as wp
 from warp._src.codegen import get_full_arg_spec, make_full_qualified_name
 from warp._src.context import CudaMemcpyKind
 from warp._src.jax import get_jax_device
+from warp._src.logger import log_warning
 from warp._src.types import (
     array_t,
     launch_bounds_t,
@@ -25,11 +26,10 @@ from warp._src.types import (
     type_size_in_bytes,
     type_to_warp,
 )
-from warp._src.utils import warn
 
 from .xla_ffi import *
 
-_wp_module_name_ = "warp.jax_experimental.ffi"
+_wp_module_name_ = "warp.jax.ffi"
 
 # Holders for the custom callbacks to keep them alive.
 _FFI_KERNEL_REGISTRY: dict[tuple, FfiKernel] = {}
@@ -41,6 +41,9 @@ _FFI_REGISTRY_LOCK = threading.Lock()
 # Lock when XLA invokes callbacks from multiple threads.
 _FFI_CALLBACK_LOCK = threading.Lock()
 
+# Sentinel for detecting when per-call kwargs are passed to differentiable wrappers.
+_MISSING = object()
+
 
 def check_jax_version():
     # check if JAX version supports this
@@ -50,7 +53,7 @@ def check_jax_version():
             f"but installed JAX version is {jax.__version_info__}."
         )
         if jax.__version_info__ >= (0, 4, 25):
-            msg += " Please use warp.jax_experimental.custom_call.jax_kernel instead."
+            msg += " Please use warp.jax.custom_call.jax_kernel instead."
         raise RuntimeError(msg)
 
 
@@ -70,7 +73,7 @@ def compute_batch_size(shape, batch_ndim):
 
 
 class GraphMode(IntEnum):
-    """CUDA graph capture modes for :func:`warp.jax_experimental.jax_callable`.
+    """CUDA graph capture modes for :func:`warp.jax.jax_callable`.
 
     These modes control whether JAX or Warp captures a CUDA graph, and whether
     staging buffers are used when capturing with Warp.
@@ -1155,12 +1158,16 @@ def jax_kernel(
             This must include the number of ``in_out_arguments``.
         vmap_method: String specifying how the callback transforms under ``vmap()``.
             This argument can also be specified for individual calls.
-        launch_dims: Specify the default kernel launch dimensions. If None, launch
-            dimensions are inferred from the shape of the first array argument.
-            This argument can also be specified for individual calls.
+        launch_dims: Specify the kernel launch dimensions. If None, launch dimensions
+            are inferred from the shape of the first array argument. When
+            ``enable_backward=False``, this value will be used by default but
+            can be overridden for individual calls. When ``enable_backward=True``,
+            this value is fixed at construction time and cannot be overridden
+            per call.
         output_dims: Specify the default dimensions of output arrays.  If None, output
             dimensions are inferred from the launch dimensions.
             This argument can also be specified for individual calls.
+            Not supported when ``enable_backward=True``.
         in_out_argnames: Names of arguments that are both inputs and outputs (aliased buffers).
             These must be array arguments that appear before any pure output arguments in the
             kernel signature. The number of in-out arguments is included in ``num_outputs``.
@@ -1176,6 +1183,7 @@ def jax_kernel(
         - Input and input-output arguments must precede the output arguments in the ``kernel`` definition.
         - There must be at least one output or input-output argument.
         - Only the CUDA backend is supported.
+        - ``output_dims`` and ``in_out_argnames`` are not supported when ``enable_backward=True``.
     """
 
     check_jax_version()
@@ -1226,11 +1234,11 @@ def jax_kernel(
             "jax_kernel(): Input-output arguments (in_out_argnames) are not supported when enable_backward=True."
         )
 
-    # TODO: we should support passing these to the forward and backward callables
-    if launch_dims is not None or output_dims is not None:
-        raise NotImplementedError(
-            "jax_kernel(): Custom dimensions (launch_dims, output_dims) are not supported when enable_backward=True."
-        )
+    # TODO: support output_dims with enable_backward=True (requires separate
+    # output-buffer allocation logic). launch_dims is supported below: the
+    # captured value is applied to both the forward and the adjoint launches.
+    if output_dims is not None:
+        raise NotImplementedError("jax_kernel(): output_dims is not yet supported when enable_backward=True.")
 
     # Differentiable path: build a custom VJP wrapper inline.
     # Infer the original kernel signature (names and annotations)
@@ -1250,8 +1258,17 @@ def jax_kernel(
             else:
                 raise TypeError(f"Invalid type for argument '{p.name}', expected array or scalar, got {type}")
 
+    # Capture an explicit user-supplied launch_dims so the same value is used
+    # for both the forward launch and the adjoint launch (required for
+    # correct gradient values when array.ndim > kernel.tid_ndim).
+    # Reuse `hashable_launch_dims` (computed above for the cache key path)
+    # so 1-D integer and sequence forms are normalized identically.
+    _user_launch_dims = hashable_launch_dims if launch_dims is not None else None
+
     def _resolve_launch_dims(call_args):
-        # determine launch dimensions from the shape of the first input array
+        if _user_launch_dims is not None:
+            return _user_launch_dims
+        # Fallback: determine launch dimensions from the shape of the first input array
         for i, p in enumerate(parameters[:num_inputs]):
             param_type = p.annotation
             if matches_array_class(param_type, wp.array):
@@ -1303,11 +1320,15 @@ def jax_kernel(
                 try:
                     gi.zero_()
                 except Exception as e:
-                    warn(f"Failed to zero gradient array: {e}", stacklevel=2)
+                    log_warning(f"Failed to zero gradient array: {e}", stacklevel=2)
                     raise e
 
-        # NOTE: We cannot use a passed launch_dims here, the backward rule doesn't receive it (and it could be wrong under pmap/vmap).
-        # We need to infer from the inputs.
+        # The same _resolve_launch_dims() is used here so that the adjoint
+        # kernel launches with exactly the same iteration space as the forward
+        # kernel (captured from the enclosing scope via _user_launch_dims when
+        # the caller supplied an explicit value, otherwise inferred from the
+        # inputs). This matches the forward path and avoids N x
+        # over-accumulation in atomic_add when array.ndim > kernel.tid_ndim.
         wp.launch(
             kernel,
             dim=_resolve_launch_dims(inputs),
@@ -1441,33 +1462,52 @@ def jax_kernel(
         vmap_method,
         module_preload_mode,
         has_side_effect,
+        # Include the normalized launch_dims so that wrapping the same kernel
+        # with different launch_dims produces independent cache entries.
+        # Reusing _user_launch_dims ensures int and 1-tuple forms of the same
+        # value map to the same key.
+        _user_launch_dims,
     )
 
     if static_args:
         static_names = [parameters[i].name for i in static_args]
+    else:
+        static_names = []
 
-        def _user_callable(*args):
-            return jax_func(*args)
+    key = (*key, tuple(sorted(static_names)))
 
-        _user_callable.__signature__ = signature
+    def _user_callable(*args):
+        return jax_func(*args)
 
-        # Cache differentiable wrapper
-        key = (*key, tuple(sorted(static_names)))
-        with _FFI_REGISTRY_LOCK:
-            cached = _FFI_DIFF_KERNEL_REGISTRY.get(key)
-            if cached is None:
-                cached = jax.jit(_user_callable, static_argnames=tuple(static_names))
-                _FFI_DIFF_KERNEL_REGISTRY[key] = cached
-        return _FFI_DIFF_KERNEL_REGISTRY[key]
+    _user_callable.__signature__ = signature
 
-    # Cache differentiable wrapper (no static args)
-    key = (*key, ())
+    # Cache differentiable wrapper
     with _FFI_REGISTRY_LOCK:
         cached = _FFI_DIFF_KERNEL_REGISTRY.get(key)
         if cached is None:
-            _FFI_DIFF_KERNEL_REGISTRY[key] = jax_func
-            cached = jax_func
-    return cached
+            cached = jax.jit(_user_callable, static_argnames=tuple(static_names))
+            _FFI_DIFF_KERNEL_REGISTRY[key] = cached
+
+    # Thin Python-level wrapper that intercepts FfiKernel-style per-call kwargs
+    # and raises informative errors before JAX tracing begins.
+    def _checked_wrapper(*args, launch_dims=_MISSING, output_dims=_MISSING, vmap_method=_MISSING):
+        if launch_dims is not _MISSING:
+            raise TypeError(
+                "jax_kernel(): launch_dims cannot be overridden per-call when enable_backward=True "
+                f"(this wrapper was created with launch_dims={_user_launch_dims!r}). "
+                "Call jax_kernel() again with a different launch_dims to create a new wrapper."
+            )
+        if output_dims is not _MISSING:
+            raise TypeError("jax_kernel(): output_dims is not supported when enable_backward=True.")
+        if vmap_method is not _MISSING:
+            raise TypeError(
+                "jax_kernel(): vmap_method cannot be overridden per-call when enable_backward=True; "
+                "it is fixed at construction time. "
+                "Call jax_kernel() again with a different vmap_method to create a new wrapper."
+            )
+        return cached(*args)
+
+    return _checked_wrapper
 
 
 def jax_callable(
@@ -1512,7 +1552,7 @@ def jax_callable(
         stage_out_argnames: Names of output arguments that need to be copied with ``GraphMode.WARP_STAGED*``.
             If ``None``, copy all output arguments.
         graph_cache_max: Maximum number of cached graphs captured using ``GraphMode.WARP``.
-            If ``None``, use ``warp.jax_experimental.get_jax_callable_default_graph_cache_max()``.
+            If ``None``, use ``warp.jax.get_jax_callable_default_graph_cache_max()``.
         module_preload_mode: Specify the devices where the module should be preloaded.
         has_side_effect: Whether the custom call has side effects. When True,
             the FFI call will be executed even when the outputs are not used.
